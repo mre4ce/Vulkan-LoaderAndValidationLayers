@@ -194,7 +194,7 @@ void explicit_DestroyInstance(VkInstance instance, const VkAllocationCallbacks *
     dispatch_key key = get_dispatch_key(instance);
     VkLayerInstanceDispatchTable *pDisp = get_dispatch_table(unique_objects_instance_table_map, instance);
     instanceExtMap.erase(pDisp);
-    get_dispatch_table(unique_objects_instance_table_map, instance)->DestroyInstance(instance, pAllocator);
+    pDisp->DestroyInstance(instance, pAllocator);
     layer_data_map.erase(key);
 }
 
