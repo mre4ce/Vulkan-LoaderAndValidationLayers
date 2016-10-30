@@ -18,8 +18,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
     add_definitions(-DVK_USE_PLATFORM_ANDROID_KHR)
     set(DisplayServer Android)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    #   TODO: Basic support is present for Xlib but is untested.
-    #         Mir support is stubbed in but unimplemented and untested.
+    #   Note: Supported configurations are XCB, XCB + Xlib, Wayland.
+    #         MIR is stubbed and untested
     option(BUILD_WSI_XCB_SUPPORT "Build XCB WSI support" ON)
     option(BUILD_WSI_XLIB_SUPPORT "Build Xlib WSI support" ON)
     option(BUILD_WSI_WAYLAND_SUPPORT "Build Wayland WSI support" OFF)
@@ -44,11 +44,15 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_definitions(-DVK_USE_PLATFORM_MIR_KHR)
         set(DisplayServer Mir)
     endif()
+
+    if (NOT BUILD_WSI_XCB_SUPPORT AND NOT BUILD_WSI_XLIB_SUPPORT AND NOT BUILD_WSI_WAYLAND_SUPPORT AND NOT BUILD_WSI_MIR_SUPPORT)
+        set(DisplayServer Display)
+    endif()
 else()
     message(FATAL_ERROR "Unsupported Platform!")
 endif()
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Header file for CMake settings
 include_directories("${PROJECT_SOURCE_DIR}/include")
@@ -56,8 +60,6 @@ include_directories("${PROJECT_SOURCE_DIR}/include")
 if(NOT WIN32)
     include(FindPkgConfig)
 endif()
-
-set (CMAKE_INSTALL_PREFIX "")
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
     set(COMMON_COMPILE_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers")
@@ -76,7 +78,9 @@ if(WIN32)
 endif()
 
 if(NOT WIN32)
-    find_package(XCB REQUIRED)
+    if (BUILD_WSI_XCB_SUPPORT)
+        find_package(XCB REQUIRED)
+    endif()
     set (BUILDTGT_DIR build)
     set (BINDATA_DIR Bin)
     set (LIBSOURCE_DIR Lib)
@@ -205,6 +209,9 @@ find_library(HLSL_LIB NAMES HLSL
 find_library(SPIRV_LIB NAMES SPIRV
              HINTS ${GLSLANG_SEARCH_PATH} )
 
+find_library(SPIRV_REMAPPER_LIB NAMES SPVRemapper
+             HINTS ${GLSLANG_SEARCH_PATH} )
+
 find_library(SPIRV_TOOLS_LIB NAMES SPIRV-Tools
              HINTS ${SPIRV_TOOLS_SEARCH_PATH} )
 
@@ -214,6 +221,7 @@ if (WIN32)
     add_library(OSDependent STATIC IMPORTED)
     add_library(HLSL        STATIC IMPORTED)
     add_library(SPIRV       STATIC IMPORTED)
+    add_library(SPVRemapper       STATIC IMPORTED)
     add_library(Loader      STATIC IMPORTED)
     add_library(SPIRV-Tools STATIC IMPORTED)
 
@@ -226,6 +234,8 @@ if (WIN32)
     find_library(HLSL_DLIB NAMES HLSLd
                  HINTS ${GLSLANG_DEBUG_SEARCH_PATH} )
     find_library(SPIRV_DLIB NAMES SPIRVd
+                 HINTS ${GLSLANG_DEBUG_SEARCH_PATH} )
+    find_library(SPIRV_REMAPPER_DLIB NAMES SPVRemapperd
                  HINTS ${GLSLANG_DEBUG_SEARCH_PATH} )
     find_library(SPIRV_TOOLS_DLIB NAMES SPIRV-Tools
                  HINTS ${SPIRV_TOOLS_DEBUG_SEARCH_PATH} )
@@ -245,14 +255,17 @@ if (WIN32)
     set_target_properties(SPIRV PROPERTIES
                          IMPORTED_LOCATION       "${SPIRV_LIB}"
                          IMPORTED_LOCATION_DEBUG "${SPIRV_DLIB}")
+    set_target_properties(SPVRemapper PROPERTIES
+                         IMPORTED_LOCATION       "${SPIRV_REMAPPER_LIB}"
+                         IMPORTED_LOCATION_DEBUG "${SPIRV_REMAPPER_DLIB}")
     set_target_properties(SPIRV-Tools PROPERTIES
                          IMPORTED_LOCATION       "${SPIRV_TOOLS_LIB}"
                          IMPORTED_LOCATION_DEBUG "${SPIRV_TOOLS_DLIB}")
 
-    set (GLSLANG_LIBRARIES glslang OGLCompiler OSDependent HLSL SPIRV)
+    set (GLSLANG_LIBRARIES glslang OGLCompiler OSDependent HLSL SPIRV SPVRemapper)
     set (SPIRV_TOOLS_LIBRARIES SPIRV-Tools)
 else ()
-    set (GLSLANG_LIBRARIES ${GLSLANG_LIB} ${OGLCompiler_LIB} ${OSDependent_LIB} ${HLSL_LIB} ${SPIRV_LIB})
+    set (GLSLANG_LIBRARIES ${GLSLANG_LIB} ${OGLCompiler_LIB} ${OSDependent_LIB} ${HLSL_LIB} ${SPIRV_LIB} ${SPIRV_REMAPPER_LIB})
     set (SPIRV_TOOLS_LIBRARIES ${SPIRV_TOOLS_LIB})
 endif()
 
@@ -260,13 +273,23 @@ set (PYTHON_CMD ${PYTHON_EXECUTABLE})
 
 if(NOT WIN32)
     include(GNUInstallDirs)
-    add_definitions(-DSYSCONFDIR="${CMAKE_INSTALL_SYSCONFDIR}")
-    add_definitions(-DDATADIR="${CMAKE_INSTALL_DATADIR}")
-    if (CMAKE_INSTALL_PREFIX STREQUAL "/usr")
-    elseif (CMAKE_INSTALL_PREFIX STREQUAL "")
-    else()
-        add_definitions(-DLOCALPREFIX="${CMAKE_INSTALL_PREFIX}")
+
+    add_definitions(-DSYSCONFDIR="${CMAKE_INSTALL_FULL_SYSCONFDIR}")
+    add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
+
+    # Make sure /etc is searched by the loader
+    if (NOT (CMAKE_INSTALL_FULL_SYSCONFDIR STREQUAL "/etc"))
+        add_definitions(-DEXTRASYSCONFDIR="/etc")
     endif()
+
+    # Make sure /usr/share is searched by the loader
+    if (NOT (CMAKE_INSTALL_FULL_DATADIR STREQUAL "/usr/share"))
+        add_definitions(-DEXTRADATADIR="/usr/share")
+    endif()
+endif()
+
+if(UNIX)
+    install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/vulkan" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endif()
 
 # loader: Generic VULKAN ICD loader

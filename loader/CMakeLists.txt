@@ -21,6 +21,8 @@ set(NORMAL_LOADER_SRCS
     trampoline.c
     wsi.c
     wsi.h
+    extensions.c
+    extensions.h
     debug_report.c
     debug_report.h
     table_ops.h
@@ -59,7 +61,6 @@ if (WIN32)
     add_library(loader-opt OBJECT ${OPT_LOADER_SRCS})
     target_compile_options(loader-opt PUBLIC "$<$<CONFIG:DEBUG>:${LOCAL_C_FLAGS_REL}>")
     add_library(vulkan-${MAJOR} SHARED $<TARGET_OBJECTS:loader-opt> $<TARGET_OBJECTS:loader-norm> ${CMAKE_CURRENT_BINARY_DIR}/vulkan-${MAJOR}.def ${CMAKE_CURRENT_SOURCE_DIR}/loader.rc)
-    set_target_properties(vulkan-${MAJOR} PROPERTIES LINK_FLAGS "/DEF:${CMAKE_CURRENT_BINARY_DIR}/vulkan-${MAJOR}.def")
     add_library(VKstatic.${MAJOR} STATIC $<TARGET_OBJECTS:loader-opt> $<TARGET_OBJECTS:loader-norm>)
     set_target_properties(VKstatic.${MAJOR} PROPERTIES OUTPUT_NAME VKstatic.${MAJOR})
     target_link_libraries(vulkan-${MAJOR} shlwapi)
@@ -82,6 +83,7 @@ else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wpointer-arith")
 
     add_library(vulkan SHARED ${LOADER_SRCS})
-    set_target_properties(vulkan PROPERTIES SOVERSION "1" VERSION "1.0.21")
+    set_target_properties(vulkan PROPERTIES SOVERSION "1" VERSION "1.0.32")
     target_link_libraries(vulkan -ldl -lpthread -lm)
+    install(TARGETS vulkan LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()

@@ -155,7 +155,7 @@ Linux an application wanting to link to the latest Vulkan ABI version would
 just link to the name vulkan (libvulkan.so).  A specific Vulkan ABI version can
 also be linked to by applications (e.g. libvulkan.so.1).
 
-####Layer Usage
+#### Layer Usage
 
 Applications desiring Vulkan functionality beyond what the core API offers may
 use various layers or extensions. A layer cannot introduce new Vulkan API
@@ -332,8 +332,6 @@ ICD they are associated with.
 No!  Most extension functionality only affects a device and not an instance or a physical
 device.  Thus, the overwhelming majority of extensions will be device extensions rather than
 instance extensions.
-
-<br/>
 
 
 ## Vulkan Installable Client Driver interface with the loader ##
@@ -594,7 +592,7 @@ from the most recent interface version.
 
 ##### Version Negotiation Between Loader and ICDs
 
-All ICDs  (supporting interface version 2 or higher) must export the following
+All ICDs (supporting interface version 2 or higher) must export the following
 function that is used for determination of the interface version that will be used.
 This entry point is not a part of the Vulkan API itself, only a private interface
 between the loader and ICDs.
@@ -635,11 +633,31 @@ instead of VK_SUCCESS then the loader will treat the ICD as incompatible
 and will not load it for use.  In this case the application will not see the ICDs vkPhysicalDevice
 during enumeration.
 
+##### Loader Version 3 Interface Changes
+
+The primary change occuring in version 3 of the loader/ICD interface is to allow an ICD to
+handle Creation/Destruction of their own KHR_surfaces.  Up until this point, the loader created
+a surface object that was used by all ICDs.  However, some ICDs may want to provide their
+own surface handles.  If an ICD chooses to enable this support, they must export support for
+version 3 of the Loader/ICD interface as well as any Vulkan command that uses a KHR_surface handle,
+such as:
+- vkCreateXXXSurfaceKHR (where XXX is the platform specific identifier [i.e.CreateWin32SurfaceKHR for Windows])
+- vkDestroySurfaceKHR
+- vkCreateSwapchainKHR
+- vkGetPhysicalDeviceSurfaceSupportKHR
+- vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+- vkGetPhysicalDeviceSurfaceFormatsKHR
+- vkGetPhysicalDeviceSurfacePresentModesKHR
+
+An ICD can still choose to not take advantage of this functionality by simply not exposing the
+above the vkCreateXXXSurfaceKHR and vkDestroySurfaceKHR commands.
+
 ##### Loader Version 2 Interface Requirements
 
-Version 2 interface has requirements in three areas: 1) ICD Vulkan entry point discovery,
-2) KHR_surface related requirements in the WSI extensions, 3) Vulkan dispatchable object
-creation requirements.
+Version 2 interface has requirements in three areas:
+ 1. ICD Vulkan entry point discovery,
+ 2. KHR_surface related requirements in the WSI extensions,
+ 3. Vulkan dispatchable object creation requirements.
 
 ######  ICD Vulkan entry point discovery
 All ICDs must export the following function that is used for discovery of ICD Vulkan entry points.
@@ -1477,16 +1495,28 @@ vkCreateDevice(
 #### Special Considerations
 ##### Associating private data with Vulkan objects within a layer
 A layer may want to associate it's own private data with one or more Vulkan
+objects.  Two common methods to do this are hash maps and object wrapping. 
+
+###### Wrapping:
+
+The loader supports layers wrapping any Vulkan object including dispatchable
 objects.
-Two common methods to do this are hash maps  and object wrapping. The loader
-supports layers wrapping any Vulkan object including dispatchable objects.
-Layers which wrap objects should ensure they always unwrap objects before
-passing them down the chain. This implies the layer must intercept every Vulkan
-command which uses the object in question. Layers above the object wrapping
-layer will see the wrapped object. Layers which wrap dispatchable objects must
-ensure that the first field in the wrapping structure is a pointer to a dispatch table
-as defined in vk_layer.h. Specifically, an instance wrapped dispatchable object
-could be as follows:
+For commands that return object handles, the layer saves the handle that is
+returned from a lower-level layer (possibly the ICD), and returns its own
+handle to the layer above it (possibly the application).  For commands that are
+given previously-returned handles, the layer unwraps the handle; that is it
+looks up the saved handle and gives that to the layer below it.
+
+Layers which wrap objects must ensure they always unwrap objects before passing
+them down the chain.  This means that the layer must intercept every Vulkan
+command which uses the object in question, and wrap or unwrap the object, as
+appropriate.  This includes adding support for all extensions with commands
+using any object the layer wraps.
+
+Layers above the object wrapping layer will see the wrapped object. Layers
+which wrap dispatchable objects must ensure that the first field in the wrapping
+structure is a pointer to a dispatch table as defined in vk_layer.h. Specifically, an
+instance wrapped dispatchable object could be as follows:
 ```
 struct my_wrapped_instance_obj_ {
     VkLayerInstanceDispatchTable *disp;
@@ -1501,6 +1531,34 @@ struct my_wrapped_instance_obj_ {
 };
 ```
 
+Layers that wrap dispatchable objects must follow the guidelines for creating
+new dispatchable objects (below).
+
+<u><b>Cautions</b></u>
+
+Layers are generally discouraged from wrapping objects, because of the
+potential for incompatibilities with new extensions.  For example, let's say
+that a layer wraps VkImage objects, and properly wraps and unwraps VkImage
+object handles for all core commands.  If a new extension is created which has
+commands that take VkImage objects as parameters, and if the layer does not
+support those new commands, an application that uses both the layer and the new
+extension will have undefined behavior when those new commands are called (e.g.
+the application may crash).  This is becaues the lower-level layers and ICD
+won't receive the handle that they generated.  Instead, they will receive a
+handle that is only known by the layer that is wrapping the object.
+
+Because of the potential for incompatibilities with unsupported extensions,
+layers that wrap objects must check which extensions are being used by the
+application, and take appropriate action if the layer is used with unsupported
+extensions (e.g. disable layer functionality, stop wrapping objects, issue a
+message to the user).
+
+The reason that the validation layers wrap objects, is to track the proper use
+and destruction of each object.  They issue a validation error if used with
+unsupported extensions, alerting the user to the potential for undefined
+behavior.
+
+###### Hash Maps:
 Alternatively, a layer may want to use a hash map to associate data with a
 given object. The key to the map could be the object. Alternatively, for
 dispatchable objects at a given level (eg device or instance) the layer may

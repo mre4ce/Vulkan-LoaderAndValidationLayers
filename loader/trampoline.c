@@ -30,6 +30,7 @@
 #include "loader.h"
 #include "debug_report.h"
 #include "wsi.h"
+#include "extensions.h"
 #include "gpa_helper.h"
 #include "table_ops.h"
 
@@ -177,8 +178,11 @@ vkEnumerateInstanceExtensionProperties(const char *pLayerName,
             goto out;
         }
         /* get extensions from all ICD's, merge so no duplicates */
-        loader_get_icd_loader_instance_extensions(NULL, &icd_libs,
-                                                  &local_ext_list);
+        res = loader_get_icd_loader_instance_extensions(NULL, &icd_libs,
+                                                        &local_ext_list);
+        if (VK_SUCCESS != res) {
+            goto out;
+        }
         loader_scanned_icd_clear(NULL, &icd_libs);
 
         // Append implicit layers.
@@ -366,8 +370,11 @@ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(
     }
 
     /* get extensions from all ICD's, merge so no duplicates, then validate */
-    loader_get_icd_loader_instance_extensions(
+    res = loader_get_icd_loader_instance_extensions(
         ptr_instance, &ptr_instance->icd_libs, &ptr_instance->ext_list);
+    if (res != VK_SUCCESS) {
+        goto out;
+    }
     res = loader_validate_instance_extensions(
         ptr_instance, &ptr_instance->ext_list,
         &ptr_instance->instance_layer_list, &ici);
@@ -400,6 +407,7 @@ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(
     if (res == VK_SUCCESS) {
         wsi_create_instance(ptr_instance, &ici);
         debug_report_create_instance(ptr_instance, &ici);
+        extensions_create_instance(ptr_instance, &ici);
 
         *pInstance = created_instance;
 
@@ -410,8 +418,6 @@ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(
          * if enabled.
          */
         loader_activate_instance_layer_extensions(ptr_instance, *pInstance);
-    } else {
-        // TODO: cleanup here.
     }
 
 out:
@@ -658,9 +664,10 @@ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
     /* Get the physical device (ICD) extensions  */
     struct loader_extension_list icd_exts;
     icd_exts.list = NULL;
-    if (!loader_init_generic_list(inst, (struct loader_generic_list *)&icd_exts,
-                                  sizeof(VkExtensionProperties))) {
-        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+    res =
+        loader_init_generic_list(inst, (struct loader_generic_list *)&icd_exts,
+                                 sizeof(VkExtensionProperties));
+    if (VK_SUCCESS != res) {
         goto out;
     }
 
@@ -706,15 +713,20 @@ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
 
     *pDevice = dev->device;
 
-    /* initialize any device extension dispatch entry's from the instance list*/
+    // Initialize any device extension dispatch entry's from the instance list
     loader_init_dispatch_dev_ext(inst, dev);
 
-    /* initialize WSI device extensions as part of core dispatch since loader
-     * has
-     * dedicated trampoline code for these*/
+    // Initialize WSI device extensions as part of core dispatch since loader
+    // has dedicated trampoline code for these*/
     loader_init_device_extension_dispatch_table(
         &dev->loader_dispatch,
         dev->loader_dispatch.core_dispatch.GetDeviceProcAddr, *pDevice);
+
+    // The loader needs to override some terminating device procs.  Usually,
+    // these are device procs which need to go through a loader terminator.
+    // This needs to occur if the loader needs to perform some work prior
+    // to passing the work along to the ICD.
+    loader_override_terminating_device_proc(*pDevice, &dev->loader_dispatch);
 
 out:
 
@@ -744,7 +756,7 @@ vkDestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator) {
 
     loader_platform_thread_lock_mutex(&loader_lock);
 
-    struct loader_icd *icd = loader_get_icd_and_device(device, &dev);
+    struct loader_icd *icd = loader_get_icd_and_device(device, &dev, NULL);
     const struct loader_instance *inst = icd->this_instance;
     disp = loader_get_dispatch(device);
 

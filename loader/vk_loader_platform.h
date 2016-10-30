@@ -50,69 +50,66 @@
 #define PATH_SEPERATOR ':'
 #define DIRECTORY_SYMBOL '/'
 
-#define VULKAN_ICDCONF_DIR                                                     \
-    "/"                                                                        \
-    "vulkan"                                                                   \
-    "/"                                                                        \
-    "icd.d"
-#define VULKAN_ICD_DIR                                                         \
-    "/"                                                                        \
-    "vulkan"                                                                   \
-    "/"                                                                        \
-    "icd"
-#define VULKAN_ELAYERCONF_DIR                                                  \
-    "/"                                                                        \
-    "vulkan"                                                                   \
-    "/"                                                                        \
-    "explicit_layer.d"
-#define VULKAN_ILAYERCONF_DIR                                                  \
-    "/"                                                                        \
-    "vulkan"                                                                   \
-    "/"                                                                        \
-    "implicit_layer.d"
-#define VULKAN_LAYER_DIR                                                       \
-    "/"                                                                        \
-    "vulkan"                                                                   \
-    "/"                                                                        \
-    "layer"
+#define VULKAN_DIR            "/vulkan/"
+#define VULKAN_ICDCONF_DIR    "icd.d"
+#define VULKAN_ICD_DIR        "icd"
+#define VULKAN_ELAYERCONF_DIR "explicit_layer.d"
+#define VULKAN_ILAYERCONF_DIR "implicit_layer.d"
+#define VULKAN_LAYER_DIR      "layer"
 
-#if defined(LOCALPREFIX)
-#define LOCAL_DRIVERS_INFO                                                     \
-    LOCALPREFIX "/" SYSCONFDIR VULKAN_ICDCONF_DIR ":" LOCALPREFIX              \
-                "/" DATADIR VULKAN_ICDCONF_DIR ":"
-#define LOCAL_ELAYERS_INFO                                                     \
-    LOCALPREFIX "/" SYSCONFDIR VULKAN_ELAYERCONF_DIR ":" LOCALPREFIX           \
-                "/" DATADIR VULKAN_ELAYERCONF_DIR ":"
-#define LOCAL_ILAYERS_INFO                                                     \
-    LOCALPREFIX "/" SYSCONFDIR VULKAN_ILAYERCONF_DIR ":" LOCALPREFIX           \
-                "/" DATADIR VULKAN_ILAYERCONF_DIR ":"
+#if defined(EXTRASYSCONFDIR)
+#define EXTRA_DRIVERS_SYSCONFDIR_INFO ":"                                      \
+    EXTRASYSCONFDIR VULKAN_DIR VULKAN_ICDCONF_DIR
+#define EXTRA_ELAYERS_SYSCONFDIR_INFO ":"                                      \
+    EXTRASYSCONFDIR VULKAN_DIR VULKAN_ELAYERCONF_DIR
+#define EXTRA_ILAYERS_SYSCONFDIR_INFO ":"                                      \
+    EXTRASYSCONFDIR VULKAN_DIR VULKAN_ILAYERCONF_DIR
 #else
-#define LOCAL_DRIVERS_INFO
-#define LOCAL_ELAYERS_INFO
-#define LOCAL_ILAYERS_INFO
+#define EXTRA_DRIVERS_SYSCONFDIR_INFO
+#define EXTRA_ELAYERS_SYSCONFDIR_INFO
+#define EXTRA_ILAYERS_SYSCONFDIR_INFO
+#endif
+
+#if defined(EXTRADATADIR)
+#define EXTRA_DRIVERS_DATADIR_INFO ":"                                         \
+    EXTRADATADIR VULKAN_DIR VULKAN_ICDCONF_DIR
+#define EXTRA_ELAYERS_DATADIR_INFO ":"                                         \
+    EXTRADATADIR VULKAN_DIR VULKAN_ELAYERCONF_DIR
+#define EXTRA_ILAYERS_DATADIR_INFO ":"                                         \
+    EXTRADATADIR VULKAN_DIR VULKAN_ILAYERCONF_DIR
+#else
+#define EXTRA_DRIVERS_DATADIR_INFO
+#define EXTRA_ELAYERS_DATADIR_INFO
+#define EXTRA_ILAYERS_DATADIR_INFO
 #endif
 
 #define DEFAULT_VK_DRIVERS_INFO                                                \
-    LOCAL_DRIVERS_INFO                                                         \
-    "/" SYSCONFDIR VULKAN_ICDCONF_DIR ":"                                      \
-    "/usr/" DATADIR VULKAN_ICDCONF_DIR
-#define DEFAULT_VK_DRIVERS_PATH ""
+    SYSCONFDIR   VULKAN_DIR VULKAN_ICDCONF_DIR ":"                             \
+    DATADIR      VULKAN_DIR VULKAN_ICDCONF_DIR                                 \
+    EXTRA_DRIVERS_SYSCONFDIR_INFO                                              \
+    EXTRA_DRIVERS_DATADIR_INFO
 #define DEFAULT_VK_ELAYERS_INFO                                                \
-    LOCAL_ELAYERS_INFO                                                         \
-    "/" SYSCONFDIR VULKAN_ELAYERCONF_DIR ":"                                   \
-    "/usr/" DATADIR VULKAN_ELAYERCONF_DIR
+    SYSCONFDIR   VULKAN_DIR VULKAN_ELAYERCONF_DIR ":"                          \
+    DATADIR      VULKAN_DIR VULKAN_ELAYERCONF_DIR                              \
+    EXTRA_ELAYERS_SYSCONFDIR_INFO                                              \
+    EXTRA_ELAYERS_DATADIR_INFO
 #define DEFAULT_VK_ILAYERS_INFO                                                \
-    LOCAL_ILAYERS_INFO                                                         \
-    "/" SYSCONFDIR VULKAN_ILAYERCONF_DIR ":"                                   \
-    "/usr/" DATADIR VULKAN_ILAYERCONF_DIR
+    SYSCONFDIR   VULKAN_DIR VULKAN_ILAYERCONF_DIR ":"                          \
+    DATADIR      VULKAN_DIR VULKAN_ILAYERCONF_DIR                              \
+    EXTRA_ILAYERS_SYSCONFDIR_INFO                                              \
+    EXTRA_ILAYERS_DATADIR_INFO
+
+#define DEFAULT_VK_DRIVERS_PATH ""
 #define DEFAULT_VK_LAYERS_PATH ""
+
 #if !defined(LAYERS_SOURCE_PATH)
 #define LAYERS_SOURCE_PATH NULL
 #endif
 #define LAYERS_PATH_ENV "VK_LAYER_PATH"
-#define HOME_VK_DRIVERS_INFO "/.local/share" VULKAN_ICDCONF_DIR
-#define HOME_VK_ELAYERS_INFO "/.local/share" VULKAN_ELAYERCONF_DIR
-#define HOME_VK_ILAYERS_INFO "/.local/share" VULKAN_ILAYERCONF_DIR
+
+#define HOME_VK_DRIVERS_INFO VULKAN_DIR VULKAN_ICDCONF_DIR
+#define HOME_VK_ELAYERS_INFO VULKAN_DIR VULKAN_ELAYERCONF_DIR
+#define HOME_VK_ILAYERS_INFO VULKAN_DIR VULKAN_ILAYERCONF_DIR
 
 // C99:
 #define PRINTF_SIZE_T_SPECIFIER "%zu"

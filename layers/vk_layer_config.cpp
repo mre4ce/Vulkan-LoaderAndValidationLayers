@@ -21,14 +21,15 @@
  * Author: Tobin Ehlis <tobin@lunarg.com>
  * Author: Mark Lobodzinski <mark@lunarg.com>
  **************************************************************************/
-#include <fstream>
-#include <string>
-#include <map>
-#include <string.h>
-#include <vulkan/vk_layer.h>
-#include <iostream>
 #include "vk_layer_config.h"
 #include "vulkan/vk_sdk_platform.h"
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <string.h>
+#include <string>
+#include <sys/stat.h>
+#include <vulkan/vk_layer.h>
 
 #define MAX_CHARS_PER_LINE 4096
 
@@ -48,6 +49,25 @@ class ConfigFile {
 };
 
 static ConfigFile g_configFileObj;
+
+std::string getEnvironment(const char *variable) {
+#if !defined(__ANDROID__) && !defined(_WIN32)
+    const char *output = getenv(variable);
+    return output == NULL ? "" : output;
+#elif defined(_WIN32)
+    int size = GetEnvironmentVariable(variable, NULL, 0);
+    if (size == 0) {
+        return "";
+    }
+    char *buffer = new char[size];
+    GetEnvironmentVariable(variable, buffer, size);
+    std::string output = buffer;
+    delete[] buffer;
+    return output;
+#else
+    return "";
+#endif
+}
 
 const char *getLayerOption(const char *_option) { return g_configFileObj.getOption(_option); }
 
@@ -120,6 +140,7 @@ ConfigFile::ConfigFile() : m_fileIsParsed(false) {
     m_valueMap["lunarg_parameter_validation.report_flags"] = "error";
     m_valueMap["lunarg_swapchain.report_flags"] = "error";
     m_valueMap["google_threading.report_flags"] = "error";
+    m_valueMap["google_unique_objects.report_flags"] = "error";
 
 #ifdef WIN32
     // For Windows, enable message logging AND OutputDebugString
@@ -129,6 +150,7 @@ ConfigFile::ConfigFile() : m_fileIsParsed(false) {
     m_valueMap["lunarg_parameter_validation.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG,VK_DBG_LAYER_ACTION_DEBUG_OUTPUT";
     m_valueMap["lunarg_swapchain.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG,VK_DBG_LAYER_ACTION_DEBUG_OUTPUT";
     m_valueMap["google_threading.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG,VK_DBG_LAYER_ACTION_DEBUG_OUTPUT";
+    m_valueMap["google_unique_objects.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG,VK_DBG_LAYER_ACTION_DEBUG_OUTPUT";
 #else  // WIN32
     m_valueMap["lunarg_core_validation.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG";
     m_valueMap["lunarg_image.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG";
@@ -136,6 +158,7 @@ ConfigFile::ConfigFile() : m_fileIsParsed(false) {
     m_valueMap["lunarg_parameter_validation.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG";
     m_valueMap["lunarg_swapchain.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG";
     m_valueMap["google_threading.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG";
+    m_valueMap["google_unique_objects.debug_action"] = "VK_DBG_LAYER_ACTION_DEFAULT,VK_DBG_LAYER_ACTION_LOG_MSG";
 #endif // WIN32
 
     m_valueMap["lunarg_core_validation.log_filename"] = "stdout";
@@ -144,6 +167,7 @@ ConfigFile::ConfigFile() : m_fileIsParsed(false) {
     m_valueMap["lunarg_parameter_validation.log_filename"] = "stdout";
     m_valueMap["lunarg_swapchain.log_filename"] = "stdout";
     m_valueMap["google_threading.log_filename"] = "stdout";
+    m_valueMap["google_unique_objects.log_filename"] = "stdout";
 }
 
 ConfigFile::~ConfigFile() {}
@@ -151,7 +175,19 @@ ConfigFile::~ConfigFile() {}
 const char *ConfigFile::getOption(const std::string &_option) {
     std::map<std::string, std::string>::const_iterator it;
     if (!m_fileIsParsed) {
-        parseFile("vk_layer_settings.txt");
+        std::string envPath = getEnvironment("VK_LAYER_SETTINGS_PATH");
+
+        // If the path exists use it, else use vk_layer_settings
+        struct stat info;
+        if (stat(envPath.c_str(), &info) == 0) {
+            // If this is a directory, look for vk_layer_settings within the directory
+            if (info.st_mode & S_IFDIR) {
+                envPath += "/vk_layer_settings.txt";
+            }
+            parseFile(envPath.c_str());
+        } else {
+            parseFile("vk_layer_settings.txt");
+        }
     }
 
     if ((it = m_valueMap.find(_option)) == m_valueMap.end())
@@ -162,7 +198,19 @@ const char *ConfigFile::getOption(const std::string &_option) {
 
 void ConfigFile::setOption(const std::string &_option, const std::string &_val) {
     if (!m_fileIsParsed) {
-        parseFile("vk_layer_settings.txt");
+        std::string envPath = getEnvironment("VK_LAYER_SETTINGS_PATH");
+
+        // If the path exists use it, else use vk_layer_settings
+        struct stat info;
+        if (stat(envPath.c_str(), &info) == 0) {
+            // If this is a directory, look for vk_layer_settings within the directory
+            if (info.st_mode & S_IFDIR) {
+                envPath += "/vk_layer_settings.txt";
+            }
+            parseFile(envPath.c_str());
+        } else {
+            parseFile("vk_layer_settings.txt");
+        }
     }
 
     m_valueMap[_option] = _val;

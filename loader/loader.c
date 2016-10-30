@@ -1,4 +1,4 @@
-﻿/*
+/*
  *
  * Copyright (c) 2014-2016 The Khronos Group Inc.
  * Copyright (c) 2014-2016 Valve Corporation
@@ -42,6 +42,7 @@
 #include "table_ops.h"
 #include "debug_report.h"
 #include "wsi.h"
+#include "extensions.h"
 #include "vulkan/vk_icd.h"
 #include "cJSON.h"
 #include "murmurhash.h"
@@ -117,6 +118,8 @@ const VkLayerInstanceDispatchTable instance_disp = {
     .CreateDebugReportCallbackEXT = terminator_CreateDebugReportCallback,
     .DestroyDebugReportCallbackEXT = terminator_DestroyDebugReportCallback,
     .DebugReportMessageEXT = terminator_DebugReportMessage,
+    .GetPhysicalDeviceExternalImageFormatPropertiesNV =
+        terminator_GetPhysicalDeviceExternalImageFormatPropertiesNV,
 #ifdef VK_USE_PLATFORM_MIR_KHR
     .CreateMirSurfaceKHR = terminator_CreateMirSurfaceKHR,
     .GetPhysicalDeviceMirPresentationSupportKHR =
@@ -409,7 +412,7 @@ vkSetInstanceDispatch(VkInstance instance, void *object) {
 VKAPI_ATTR VkResult VKAPI_CALL
 vkSetDeviceDispatch(VkDevice device, void *object) {
     struct loader_device *dev;
-    struct loader_icd *icd = loader_get_icd_and_device(device, &dev);
+    struct loader_icd *icd = loader_get_icd_and_device(device, &dev, NULL);
 
     if (!icd) {
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -554,32 +557,26 @@ static size_t loader_platform_combine_path(char *dest, size_t len, ...) {
  * Given string of three part form "maj.min.pat" convert to a vulkan version
  * number.
  */
-static uint32_t loader_make_version(const char *vers_str) {
+static uint32_t loader_make_version(char *vers_str) {
     uint32_t vers = 0, major = 0, minor = 0, patch = 0;
-    char *minor_str = NULL;
-    char *patch_str = NULL;
-    char *cstr;
-    char *str;
+    char *vers_tok;
 
-    if (!vers_str)
+    if (!vers_str) {
         return vers;
-    cstr = loader_stack_alloc(strlen(vers_str) + 1);
-    strcpy(cstr, vers_str);
-    while ((str = strchr(cstr, '.')) != NULL) {
-        if (minor_str == NULL) {
-            minor_str = str + 1;
-            *str = '\0';
-            major = atoi(cstr);
-        } else if (patch_str == NULL) {
-            patch_str = str + 1;
-            *str = '\0';
-            minor = atoi(minor_str);
-        } else {
-            return vers;
-        }
-        cstr = str + 1;
     }
-    patch = atoi(patch_str);
+
+    vers_tok = strtok(vers_str, ".\"\n\r");
+    if (NULL != vers_tok) {
+        major = (uint16_t)atoi(vers_tok);
+        vers_tok = strtok(NULL, ".\"\n\r");
+        if (NULL != vers_tok) {
+            minor = (uint16_t)atoi(vers_tok);
+            vers_tok = strtok(NULL, ".\"\n\r");
+            if (NULL != vers_tok) {
+                patch = (uint16_t)atoi(vers_tok);
+            }
+        }
+    }
 
     return VK_MAKE_VERSION(major, minor, patch);
 }
@@ -716,29 +713,29 @@ void loader_delete_layer_properties(const struct loader_instance *inst,
     }
 }
 
-static void loader_add_instance_extensions(
+static VkResult loader_add_instance_extensions(
     const struct loader_instance *inst,
     const PFN_vkEnumerateInstanceExtensionProperties fp_get_props,
     const char *lib_name, struct loader_extension_list *ext_list) {
     uint32_t i, count = 0;
     VkExtensionProperties *ext_props;
-    VkResult res;
+    VkResult res = VK_SUCCESS;
 
     if (!fp_get_props) {
         /* No EnumerateInstanceExtensionProperties defined */
-        return;
+        goto out;
     }
 
     res = fp_get_props(NULL, &count, NULL);
     if (res != VK_SUCCESS) {
         loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                    "Error getting Instance extension count from %s", lib_name);
-        return;
+        goto out;
     }
 
     if (count == 0) {
         /* No ExtensionProperties to report */
-        return;
+        goto out;
     }
 
     ext_props = loader_stack_alloc(count * sizeof(VkExtensionProperties));
@@ -747,7 +744,7 @@ static void loader_add_instance_extensions(
     if (res != VK_SUCCESS) {
         loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                    "Error getting Instance extensions from %s", lib_name);
-        return;
+        goto out;
     }
 
     for (i = 0; i < count; i++) {
@@ -763,11 +760,17 @@ static void loader_add_instance_extensions(
             loader_log(inst, VK_DEBUG_REPORT_DEBUG_BIT_EXT, 0,
                        "Instance Extension: %s (%s) version %s",
                        ext_props[i].extensionName, lib_name, spec_version);
-            loader_add_to_ext_list(inst, ext_list, 1, &ext_props[i]);
+            res = loader_add_to_ext_list(inst, ext_list, 1, &ext_props[i]);
+            if (res != VK_SUCCESS) {
+                loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
+                           "Failed to add %s to Instance extension list",
+                           lib_name);
+                goto out;
+            }
         }
     }
-
-    return;
+out:
+    return res;
 }
 
 /*
@@ -782,9 +785,10 @@ loader_init_device_extensions(const struct loader_instance *inst,
     VkResult res;
     uint32_t i;
 
-    if (!loader_init_generic_list(inst, (struct loader_generic_list *)ext_list,
-                                  sizeof(VkExtensionProperties))) {
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    res = loader_init_generic_list(inst, (struct loader_generic_list *)ext_list,
+                                   sizeof(VkExtensionProperties));
+    if (VK_SUCCESS != res) {
+        return res;
     }
 
     for (i = 0; i < count; i++) {
@@ -820,12 +824,14 @@ VkResult loader_add_device_extensions(const struct loader_instance *inst,
                                                NULL);
     if (res == VK_SUCCESS && count > 0) {
         ext_props = loader_stack_alloc(count * sizeof(VkExtensionProperties));
-        if (!ext_props)
+        if (!ext_props) {
             return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
         res = fpEnumerateDeviceExtensionProperties(physical_device, NULL,
                                                    &count, ext_props);
-        if (res != VK_SUCCESS)
+        if (res != VK_SUCCESS) {
             return res;
+        }
         for (i = 0; i < count; i++) {
             char spec_version[64];
 
@@ -851,18 +857,20 @@ VkResult loader_add_device_extensions(const struct loader_instance *inst,
     return VK_SUCCESS;
 }
 
-bool loader_init_generic_list(const struct loader_instance *inst,
+VkResult loader_init_generic_list(const struct loader_instance *inst,
                               struct loader_generic_list *list_info,
                               size_t element_size) {
-    list_info->capacity = 32 * element_size;
-    list_info->list = loader_instance_heap_alloc(
-        inst, list_info->capacity, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
-    if (list_info->list == NULL) {
-        return false;
-    }
-    memset(list_info->list, 0, list_info->capacity);
+    size_t capacity = 32 * element_size;
     list_info->count = 0;
-    return true;
+    list_info->capacity = 0;
+    list_info->list = loader_instance_heap_alloc(
+        inst, capacity, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+    if (list_info->list == NULL) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    memset(list_info->list, 0, capacity);
+    list_info->capacity = capacity;
+    return VK_SUCCESS;
 }
 
 void loader_destroy_generic_list(const struct loader_instance *inst,
@@ -886,12 +894,12 @@ VkResult loader_add_to_ext_list(const struct loader_instance *inst,
     const VkExtensionProperties *cur_ext;
 
     if (ext_list->list == NULL || ext_list->capacity == 0) {
-        loader_init_generic_list(inst, (struct loader_generic_list *)ext_list,
+        VkResult res = loader_init_generic_list(inst, (struct loader_generic_list *)ext_list,
                                  sizeof(VkExtensionProperties));
+        if (VK_SUCCESS != res) {
+            return res;
+        }
     }
-
-    if (ext_list->list == NULL)
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
 
     for (i = 0; i < prop_list_count; i++) {
         cur_ext = &props[i];
@@ -937,12 +945,13 @@ loader_add_to_dev_ext_list(const struct loader_instance *inst,
                            uint32_t entry_count, char **entrys) {
     uint32_t idx;
     if (ext_list->list == NULL || ext_list->capacity == 0) {
-        loader_init_generic_list(inst, (struct loader_generic_list *)ext_list,
-                                 sizeof(struct loader_dev_ext_props));
+        VkResult res = loader_init_generic_list(
+            inst, (struct loader_generic_list *)ext_list,
+            sizeof(struct loader_dev_ext_props));
+        if (VK_SUCCESS != res) {
+            return res;
+        }
     }
-
-    if (ext_list->list == NULL)
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
 
     // look for duplicates
     if (has_vk_dev_ext_property(props, ext_list)) {
@@ -1177,7 +1186,6 @@ get_dev_extension_property(const char *name,
     return NULL;
 }
 
-
 /*
  * For Instance extensions implemented within the loader (i.e. DEBUG_REPORT
  * the extension must provide two entry points for the loader to use:
@@ -1198,31 +1206,49 @@ get_dev_extension_property(const char *name,
  * linked directly with the loader.
  */
 
-void loader_get_icd_loader_instance_extensions(
+VkResult loader_get_icd_loader_instance_extensions(
     const struct loader_instance *inst, struct loader_icd_libs *icd_libs,
     struct loader_extension_list *inst_exts) {
     struct loader_extension_list icd_exts;
+    VkResult res = VK_SUCCESS;
+
     loader_log(inst, VK_DEBUG_REPORT_DEBUG_BIT_EXT, 0,
                "Build ICD instance extension list");
+
     // traverse scanned icd list adding non-duplicate extensions to the list
     for (uint32_t i = 0; i < icd_libs->count; i++) {
-        loader_init_generic_list(inst, (struct loader_generic_list *)&icd_exts,
-                                 sizeof(VkExtensionProperties));
-        loader_add_instance_extensions(
+        res = loader_init_generic_list(inst,
+                                       (struct loader_generic_list *)&icd_exts,
+                                       sizeof(VkExtensionProperties));
+        if (VK_SUCCESS != res) {
+            goto out;
+        }
+        res = loader_add_instance_extensions(
             inst, icd_libs->list[i].EnumerateInstanceExtensionProperties,
             icd_libs->list[i].lib_name, &icd_exts);
-        loader_add_to_ext_list(inst, inst_exts, icd_exts.count, icd_exts.list);
+        if (VK_SUCCESS == res) {
+            res = loader_add_to_ext_list(inst, inst_exts, icd_exts.count,
+                                         icd_exts.list);
+        }
         loader_destroy_generic_list(inst,
                                     (struct loader_generic_list *)&icd_exts);
+        if (VK_SUCCESS != res) {
+            goto out;
+        }
     };
 
     // Traverse loader's extensions, adding non-duplicate extensions to the list
     debug_report_add_instance_extensions(inst, inst_exts);
+
+out:
+    return res;
 }
 
 struct loader_icd *loader_get_icd_and_device(const VkDevice device,
-                                             struct loader_device **found_dev) {
+                                             struct loader_device **found_dev,
+                                             uint32_t *icd_index) {
     *found_dev = NULL;
+    uint32_t index = 0;
     for (struct loader_instance *inst = loader.instances; inst;
          inst = inst->next) {
         for (struct loader_icd *icd = inst->icds; icd; icd = icd->next) {
@@ -1233,8 +1259,12 @@ struct loader_icd *loader_get_icd_and_device(const VkDevice device,
                 if (loader_get_dispatch(dev->device) ==
                     loader_get_dispatch(device)) {
                     *found_dev = dev;
+                    if (NULL != icd_index) {
+                        *icd_index = index;
+                    }
                     return icd;
                 }
+            index++;
         }
     }
     return NULL;
@@ -1245,9 +1275,6 @@ void loader_destroy_logical_device(const struct loader_instance *inst,
                                    const VkAllocationCallbacks *pAllocator) {
     if (pAllocator) {
         dev->alloc_callbacks = *pAllocator;
-    }
-    if (NULL != dev->app_extension_props) {
-        loader_device_heap_free(dev, dev->app_extension_props);
     }
     if (NULL != dev->activated_layer_list.list) {
         loader_deactivate_layers(inst, dev, &dev->activated_layer_list);
@@ -1332,12 +1359,13 @@ static struct loader_icd *
 loader_icd_create(const struct loader_instance *inst) {
     struct loader_icd *icd;
 
-    icd = loader_instance_heap_alloc(inst, sizeof(*icd),
+    icd = loader_instance_heap_alloc(inst, sizeof(struct loader_icd),
                                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
-    if (!icd)
+    if (!icd) {
         return NULL;
+    }
 
-    memset(icd, 0, sizeof(*icd));
+    memset(icd, 0, sizeof(struct loader_icd));
 
     return icd;
 }
@@ -1348,8 +1376,9 @@ loader_icd_add(struct loader_instance *ptr_inst,
     struct loader_icd *icd;
 
     icd = loader_icd_create(ptr_inst);
-    if (!icd)
+    if (!icd) {
         return NULL;
+    }
 
     icd->this_icd_lib = icd_lib;
     icd->this_instance = ptr_inst;
@@ -1433,9 +1462,10 @@ static VkResult loader_scanned_icd_init(const struct loader_instance *inst,
     return err;
 }
 
-static void loader_scanned_icd_add(const struct loader_instance *inst,
-                                   struct loader_icd_libs *icd_libs,
-                                   const char *filename, uint32_t api_version) {
+static VkResult loader_scanned_icd_add(const struct loader_instance *inst,
+                                       struct loader_icd_libs *icd_libs,
+                                       const char *filename,
+                                       uint32_t api_version) {
     loader_platform_dl_handle handle;
     PFN_vkCreateInstance fp_create_inst;
     PFN_vkEnumerateInstanceExtensionProperties fp_get_inst_ext_props;
@@ -1443,6 +1473,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
     PFN_vkNegotiateLoaderICDInterfaceVersion fp_negotiate_icd_version;
     struct loader_scanned_icds *new_node;
     uint32_t interface_vers;
+    VkResult res = VK_SUCCESS;
 
     /* TODO implement smarter opening/closing of libraries. For now this
      * function leaves libraries open and the scanned_icd_clear closes them */
@@ -1450,7 +1481,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
     if (!handle) {
         loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                    loader_platform_open_library_error(filename));
-        return;
+        goto out;
     }
 
     // Get and settle on an ICD interface version
@@ -1463,7 +1494,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
                    "ICD (%s) doesn't support interface version compatible"
                    "with loader, skip this ICD %s",
                    filename);
-        return;
+        goto out;
     }
 
     fp_get_proc_addr =
@@ -1477,7 +1508,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
             loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
                        loader_platform_get_proc_address_error(
                            "vk_icdGetInstanceProcAddr"));
-            return;
+            goto out;
         } else {
             loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                        "Using deprecated ICD interface of "
@@ -1492,7 +1523,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
                        "Couldn't get vkCreateInstance via dlsym/loadlibrary "
                        "for ICD %s",
                        filename);
-            return;
+            goto out;
         }
         fp_get_inst_ext_props = loader_platform_get_proc_address(
             handle, "vkEnumerateInstanceExtensionProperties");
@@ -1501,7 +1532,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
                        "Couldn't get vkEnumerateInstanceExtensionProperties "
                        "via dlsym/loadlibrary for ICD %s",
                        filename);
-            return;
+            goto out;
         }
     } else {
         // Use newer interface version 1 or later
@@ -1515,7 +1546,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
                        "Couldn't get vkCreateInstance via "
                        "vk_icdGetInstanceProcAddr for ICD %s",
                        filename);
-            return;
+            goto out;
         }
         fp_get_inst_ext_props =
             (PFN_vkEnumerateInstanceExtensionProperties)fp_get_proc_addr(
@@ -1525,7 +1556,7 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
                        "Couldn't get vkEnumerateInstanceExtensionProperties "
                        "via vk_icdGetInstanceProcAddr for ICD %s",
                        filename);
-            return;
+            goto out;
         }
     }
 
@@ -1537,9 +1568,10 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
             inst, icd_libs->list, icd_libs->capacity, icd_libs->capacity * 2,
             VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
         if (NULL == icd_libs->list) {
+            res = VK_ERROR_OUT_OF_HOST_MEMORY;
             loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
                        "realloc failed on icd library list");
-            return;
+            goto out;
         }
         // double capacity
         icd_libs->capacity *= 2;
@@ -1556,12 +1588,17 @@ static void loader_scanned_icd_add(const struct loader_instance *inst,
     new_node->lib_name = (char *)loader_instance_heap_alloc(
         inst, strlen(filename) + 1, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
     if (NULL == new_node->lib_name) {
+        res = VK_ERROR_OUT_OF_HOST_MEMORY;
         loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                    "Out of memory can't add icd");
-        return;
+        goto out;
     }
     strcpy(new_node->lib_name, filename);
     icd_libs->count++;
+
+out:
+
+    return res;
 }
 
 static bool loader_icd_init_entrys(struct loader_icd *icd, VkInstance inst,
@@ -1605,18 +1642,28 @@ static bool loader_icd_init_entrys(struct loader_icd *icd, VkInstance inst,
     LOOKUP_GIPA(CreateDisplayModeKHR, false);
     LOOKUP_GIPA(GetDisplayPlaneCapabilitiesKHR, false);
     LOOKUP_GIPA(DestroySurfaceKHR, false);
+    LOOKUP_GIPA(CreateSwapchainKHR, false);
 #ifdef VK_USE_PLATFORM_WIN32_KHR
+    LOOKUP_GIPA(CreateWin32SurfaceKHR, false);
     LOOKUP_GIPA(GetPhysicalDeviceWin32PresentationSupportKHR, false);
 #endif
 #ifdef VK_USE_PLATFORM_XCB_KHR
+    LOOKUP_GIPA(CreateXcbSurfaceKHR, false);
     LOOKUP_GIPA(GetPhysicalDeviceXcbPresentationSupportKHR, false);
 #endif
 #ifdef VK_USE_PLATFORM_XLIB_KHR
+    LOOKUP_GIPA(CreateXlibSurfaceKHR, false);
     LOOKUP_GIPA(GetPhysicalDeviceXlibPresentationSupportKHR, false);
 #endif
+#ifdef VK_USE_PLATFORM_MIR_KHR
+    LOOKUP_GIPA(CreateMirSurfaceKHR, false);
+    LOOKUP_GIPA(GetPhysicalDeviceMirPresentationSupportKHR, false);
+#endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
+    LOOKUP_GIPA(CreateWaylandSurfaceKHR, false);
     LOOKUP_GIPA(GetPhysicalDeviceWaylandPresentationSupportKHR, false);
 #endif
+    LOOKUP_GIPA(GetPhysicalDeviceExternalImageFormatPropertiesNV, false);
 
 #undef LOOKUP_GIPA
 
@@ -1776,43 +1823,60 @@ static void loader_get_fullpath(const char *file, const char *dirs,
  * A pointer to a cJSON object representing the JSON parse tree.
  * This returned buffer should be freed by caller.
  */
-static cJSON *loader_get_json(const struct loader_instance *inst,
-                              const char *filename) {
-    FILE *file;
+static VkResult loader_get_json(const struct loader_instance *inst,
+                                const char *filename, cJSON **json) {
+    FILE *file = NULL;
     char *json_buf;
-    cJSON *json;
     size_t len;
+    VkResult res = VK_SUCCESS;
+
+    if (NULL == json) {
+        res = VK_ERROR_INITIALIZATION_FAILED;
+        goto out;
+    }
+
+    *json = NULL;
+
     file = fopen(filename, "rb");
     if (!file) {
+        res = VK_ERROR_INITIALIZATION_FAILED;
         loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
                    "Couldn't open JSON file %s", filename);
-        return NULL;
+        goto out;
     }
     fseek(file, 0, SEEK_END);
     len = ftell(file);
     fseek(file, 0, SEEK_SET);
     json_buf = (char *)loader_stack_alloc(len + 1);
     if (json_buf == NULL) {
+        res = VK_ERROR_OUT_OF_HOST_MEMORY;
         loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
                    "Out of memory can't get JSON file");
-        fclose(file);
-        return NULL;
+        goto out;
     }
     if (fread(json_buf, sizeof(char), len, file) != len) {
+        res = VK_ERROR_INITIALIZATION_FAILED;
         loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
                    "fread failed can't get JSON file");
-        fclose(file);
-        return NULL;
+        goto out;
     }
-    fclose(file);
     json_buf[len] = '\0';
 
     // parse text from file
-    json = cJSON_Parse(json_buf);
-    if (json == NULL)
+    *json = cJSON_Parse(json_buf);
+    if (*json == NULL) {
+        res = VK_ERROR_OUT_OF_HOST_MEMORY;
         loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
                    "Can't parse JSON file %s", filename);
-    return json;
+        goto out;
+    }
+
+out:
+    if (NULL != file) {
+        fclose(file);
+    }
+
+    return res;
 }
 
 /**
@@ -2492,8 +2556,9 @@ loader_add_layer_properties(const struct loader_instance *inst,
  * location is used to look for manifest files. The location
  * is interpreted as  Registry path on Windows and a directory path(s)
  * on Linux. "home_location" is an additional directory in the users home
- * directory to look at. It is exapanded into the dir path $HOME/home_location.
- * This "home_location" is only used on Linux.
+ * directory to look at. It is expanded into the dir path
+ * $XDG_DATA_HOME/home_location or $HOME/.local/share/home_location depending
+ * on environment variables. This "home_location" is only used on Linux.
  *
  * \returns
  * VKResult
@@ -2707,10 +2772,11 @@ static VkResult loader_get_manifest_files(
 #if !defined(_WIN32)
         if (home_location != NULL &&
             (next_file == NULL || *next_file == '\0') && override == NULL) {
-            char *home = secure_getenv("HOME");
-            if (home != NULL) {
-                size_t len;
-                char *home_loc = loader_stack_alloc(strlen(home) + 2 +
+            char *xdgdatahome = secure_getenv("XDG_DATA_HOME");
+            size_t len;
+            if (xdgdatahome != NULL) {
+
+                char *home_loc = loader_stack_alloc(strlen(xdgdatahome) + 2 +
                                                     strlen(home_location));
                 if (home_loc == NULL) {
                     loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
@@ -2718,7 +2784,7 @@ static VkResult loader_get_manifest_files(
                     res = VK_ERROR_OUT_OF_HOST_MEMORY;
                     goto out;
                 }
-                strcpy(home_loc, home);
+                strcpy(home_loc, xdgdatahome);
                 // Add directory separator if needed
                 if (home_location[0] != DIRECTORY_SYMBOL) {
                     len = strlen(home_loc);
@@ -2732,9 +2798,49 @@ static VkResult loader_get_manifest_files(
 
                 loader_log(
                     inst, VK_DEBUG_REPORT_DEBUG_BIT_EXT, 0,
-                    "Searching the following paths for manifest files: %s\n",
+                    "Searching the following path for manifest files: %s\n",
                     home_loc);
                 list_is_dirs = true;
+
+            } else {
+
+                char *home = secure_getenv("HOME");
+                if (home != NULL) {
+                    char *home_loc = loader_stack_alloc(strlen(home) + 16 +
+                                                        strlen(home_location));
+                    if (home_loc == NULL) {
+                        loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
+                                "Out of memory can't get manifest files");
+                        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+                        goto out;
+                    }
+                    strcpy(home_loc, home);
+
+                    len = strlen(home);
+                    if (home[len] != DIRECTORY_SYMBOL) {
+                        home_loc[len] = DIRECTORY_SYMBOL;
+                        home_loc[len + 1] = '\0';
+                    }
+                    strcat(home_loc, ".local/share");
+
+                    if (home_location[0] != DIRECTORY_SYMBOL) {
+                        len = strlen(home_loc);
+                        home_loc[len] = DIRECTORY_SYMBOL;
+                        home_loc[len + 1] = '\0';
+                    }
+                    strcat(home_loc, home_location);
+                    file = home_loc;
+                    next_file = loader_get_next_path(file);
+                    home_location = NULL;
+
+                    loader_log(
+                        inst, VK_DEBUG_REPORT_DEBUG_BIT_EXT, 0,
+                        "Searching the following path for manifest files: %s\n",
+                        home_loc);
+                    list_is_dirs = true;
+                } else {
+                    // without knowing HOME, we just.. give up
+                }
             }
         }
 #endif
@@ -2786,6 +2892,7 @@ VkResult loader_icd_scan(const struct loader_instance *inst,
     VkResult res = VK_SUCCESS;
     bool lockedMutex = false;
     cJSON *json = NULL;
+    uint32_t num_good_icds = 0;
 
     memset(&manifest_files, 0, sizeof(struct loader_manifest_files));
 
@@ -2809,22 +2916,33 @@ VkResult loader_icd_scan(const struct loader_instance *inst,
             continue;
         }
 
-        json = loader_get_json(inst, file_str);
-        if (!json) {
+        res = loader_get_json(inst, file_str, &json);
+        if (VK_ERROR_OUT_OF_HOST_MEMORY == res) {
+            break;
+        } else if (VK_SUCCESS != res || NULL == json) {
             continue;
         }
+
         cJSON *item, *itemICD;
         item = cJSON_GetObjectItem(json, "file_format_version");
         if (item == NULL) {
-            res = VK_ERROR_INITIALIZATION_FAILED;
-            goto out;
+            if (num_good_icds == 0) {
+                res = VK_ERROR_INITIALIZATION_FAILED;
+            }
+            cJSON_Delete(json);
+            json = NULL;
+            continue;
         }
         char *file_vers = cJSON_Print(item);
         if (NULL == file_vers) {
             // Only reason the print can fail is if there was an allocation
             // issue
-            res = VK_ERROR_OUT_OF_HOST_MEMORY;
-            goto out;
+            if (num_good_icds == 0) {
+                res = VK_ERROR_OUT_OF_HOST_MEMORY;
+            }
+            cJSON_Delete(json);
+            json = NULL;
+            continue;
         }
         loader_log(inst, VK_DEBUG_REPORT_INFORMATION_BIT_EXT, 0,
                    "Found manifest file %s, version %s", file_str, file_vers);
@@ -2857,6 +2975,9 @@ VkResult loader_icd_scan(const struct loader_instance *inst,
                                "Can't find \"library_path\" in ICD JSON file "
                                "%s, skipping",
                                file_str);
+                    if (num_good_icds == 0) {
+                        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+                    }
                     cJSON_Free(temp);
                     cJSON_Delete(json);
                     json = NULL;
@@ -2865,9 +2986,21 @@ VkResult loader_icd_scan(const struct loader_instance *inst,
                 // strip out extra quotes
                 temp[strlen(temp) - 1] = '\0';
                 char *library_path = loader_stack_alloc(strlen(temp) + 1);
+                if (NULL == library_path) {
+                    loader_log(
+                        inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
+                        "Can't allocate space for \"library_path\" in ICD "
+                        "JSON file %s, skipping",
+                        file_str);
+                    res = VK_ERROR_OUT_OF_HOST_MEMORY;
+                    cJSON_Free(temp);
+                    cJSON_Delete(json);
+                    json = NULL;
+                    goto out;
+                }
                 strcpy(library_path, &temp[1]);
                 cJSON_Free(temp);
-                if (!library_path || strlen(library_path) == 0) {
+                if (strlen(library_path) == 0) {
                     loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                                "Can't find \"library_path\" in ICD JSON file "
                                "%s, skipping",
@@ -2909,7 +3042,11 @@ VkResult loader_icd_scan(const struct loader_instance *inst,
                     vers = loader_make_version(temp);
                     cJSON_Free(temp);
                 }
-                loader_scanned_icd_add(inst, icds, fullpath, vers);
+                res = loader_scanned_icd_add(inst, icds, fullpath, vers);
+                if (VK_SUCCESS != res) {
+                    goto out;
+                }
+                num_good_icds++;
             } else {
                 loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                            "Can't find \"library_path\" object in ICD JSON "
@@ -2991,8 +3128,10 @@ void loader_layer_scan(const struct loader_instance *inst,
                 continue;
 
             // parse file into JSON struct
-            json = loader_get_json(inst, file_str);
-            if (!json) {
+            VkResult res = loader_get_json(inst, file_str, &json);
+            if (VK_ERROR_OUT_OF_HOST_MEMORY == res) {
+                break;
+            } else if (VK_SUCCESS != res || NULL == json) {
                 continue;
             }
 
@@ -3054,8 +3193,10 @@ void loader_implicit_layer_scan(const struct loader_instance *inst,
         }
 
         // parse file into JSON struct
-        json = loader_get_json(inst, file_str);
-        if (!json) {
+        res = loader_get_json(inst, file_str, &json);
+        if (VK_ERROR_OUT_OF_HOST_MEMORY == res) {
+            break;
+        } else if (VK_SUCCESS != res || NULL == json) {
             continue;
         }
 
@@ -3108,10 +3249,36 @@ loader_gpa_instance_internal(VkInstance inst, const char *pName) {
     return NULL;
 }
 
-static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+void loader_override_terminating_device_proc(
+    VkDevice device, struct loader_dev_dispatch_table *disp_table) {
+    struct loader_device *dev;
+    struct loader_icd *icd = loader_get_icd_and_device(device, &dev, NULL);
+
+    // Certain device entry-points still need to go through a terminator before
+    // hitting the ICD.  This could be for several reasons, but the main one
+    // is currently unwrapping an object before passing the appropriate info
+    // along to the ICD.
+    if ((PFN_vkVoidFunction)disp_table->core_dispatch.CreateSwapchainKHR ==
+        (PFN_vkVoidFunction)icd->GetDeviceProcAddr(device,
+                                                   "vkCreateSwapchainKHR")) {
+        disp_table->core_dispatch.CreateSwapchainKHR =
+            terminator_vkCreateSwapchainKHR;
+    }
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 loader_gpa_device_internal(VkDevice device, const char *pName) {
     struct loader_device *dev;
-    struct loader_icd *icd = loader_get_icd_and_device(device, &dev);
+    struct loader_icd *icd = loader_get_icd_and_device(device, &dev, NULL);
+
+    // Certain device entry-points still need to go through a terminator before
+    // hitting the ICD.  This could be for several reasons, but the main one
+    // is currently unwrapping an object before passing the appropriate info
+    // along to the ICD.
+    if (!strcmp(pName, "vkCreateSwapchainKHR")) {
+        return (PFN_vkVoidFunction)terminator_vkCreateSwapchainKHR;
+    }
+
     return icd->GetDeviceProcAddr(device, pName);
 }
 
@@ -3135,7 +3302,7 @@ static void loader_init_dispatch_dev_ext_entry(struct loader_instance *inst,
         gdpa_value = dev->loader_dispatch.core_dispatch.GetDeviceProcAddr(
             dev->device, funcName);
         if (gdpa_value != NULL)
-            dev->loader_dispatch.ext_dispatch.DevExt[idx] =
+            dev->loader_dispatch.ext_dispatch.dev_ext[idx] =
                 (PFN_vkDevExt)gdpa_value;
     } else {
         for (uint32_t i = 0; i < inst->total_icd_count; i++) {
@@ -3146,7 +3313,7 @@ static void loader_init_dispatch_dev_ext_entry(struct loader_instance *inst,
                     ldev->loader_dispatch.core_dispatch.GetDeviceProcAddr(
                         ldev->device, funcName);
                 if (gdpa_value != NULL)
-                    ldev->loader_dispatch.ext_dispatch.DevExt[idx] =
+                    ldev->loader_dispatch.ext_dispatch.dev_ext[idx] =
                         (PFN_vkDevExt)gdpa_value;
                 ldev = ldev->next;
             }
@@ -3201,17 +3368,6 @@ static bool loader_check_layer_list_for_address(
                 }
             }
         }
-    }
-
-    return false;
-}
-
-static bool
-loader_check_layers_for_address(const struct loader_instance *const inst,
-                                const char *funcName) {
-    if (loader_check_layer_list_for_address(&inst->instance_layer_list,
-                                            funcName)) {
-        return true;
     }
 
     return false;
@@ -3349,7 +3505,7 @@ void *loader_dev_ext_gpa(struct loader_instance *inst, const char *funcName) {
 
     // Check if funcName is supported in either ICDs or a layer library
     if (!loader_check_icds_for_address(inst, funcName) &&
-        !loader_check_layers_for_address(inst, funcName)) {
+        !loader_check_layer_list_for_address(&inst->instance_layer_list, funcName)) {
         // if support found in layers continue on
         return NULL;
     }
@@ -3870,7 +4026,7 @@ VkResult loader_validate_instance_extensions(
         /* Not in global list, search layer extension lists */
         for (uint32_t j = 0; j < pCreateInfo->enabledLayerCount; j++) {
             layer_prop = loader_get_layer_property(
-                pCreateInfo->ppEnabledLayerNames[i], instance_layer);
+                pCreateInfo->ppEnabledLayerNames[j], instance_layer);
             if (!layer_prop) {
                 /* Should NOT get here, loader_validate_layers
                  * should have already filtered this case out.
@@ -3957,7 +4113,6 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateInstance(
     char **filtered_extension_names = NULL;
     VkInstanceCreateInfo icd_create_info;
     VkResult res = VK_SUCCESS;
-    bool success = false;
 
     struct loader_instance *ptr_instance = (struct loader_instance *)*pInstance;
     memcpy(&icd_create_info, pCreateInfo, sizeof(icd_create_info));
@@ -3975,7 +4130,8 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateInstance(
     filtered_extension_names =
         loader_stack_alloc(pCreateInfo->enabledExtensionCount * sizeof(char *));
     if (!filtered_extension_names) {
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
+        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+        goto out;
     }
     icd_create_info.ppEnabledExtensionNames =
         (const char *const *)filtered_extension_names;
@@ -3983,13 +4139,8 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateInstance(
     for (uint32_t i = 0; i < ptr_instance->icd_libs.count; i++) {
         icd = loader_icd_add(ptr_instance, &ptr_instance->icd_libs.list[i]);
         if (NULL == icd) {
-            while (NULL != ptr_instance->icds) {
-                icd = ptr_instance->icds;
-                ptr_instance->icds = icd->next;
-                icd->DestroyInstance(icd->instance, pAllocator);
-                loader_icd_destroy(ptr_instance, icd, pAllocator);
-            }
-            return VK_ERROR_OUT_OF_HOST_MEMORY;
+            res = VK_ERROR_OUT_OF_HOST_MEMORY;
+            goto out;
         }
         icd_create_info.enabledExtensionCount = 0;
         struct loader_extension_list icd_exts;
@@ -3998,13 +4149,40 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateInstance(
                    "Build ICD instance extension list");
         // traverse scanned icd list adding non-duplicate extensions to the
         // list
-        loader_init_generic_list(ptr_instance,
+        res = loader_init_generic_list(ptr_instance,
                                  (struct loader_generic_list *)&icd_exts,
                                  sizeof(VkExtensionProperties));
-        loader_add_instance_extensions(
+        if (VK_ERROR_OUT_OF_HOST_MEMORY == res) {
+            // If out of memory, bail immediately.
+            goto out;
+        } else if (VK_SUCCESS != res) {
+            // Something bad happened with this ICD, so free it and try the
+            // next.
+            ptr_instance->icds = icd->next;
+            icd->next = NULL;
+            loader_icd_destroy(ptr_instance, icd, pAllocator);
+            continue;
+        }
+
+        res = loader_add_instance_extensions(
             ptr_instance,
             icd->this_icd_lib->EnumerateInstanceExtensionProperties,
             icd->this_icd_lib->lib_name, &icd_exts);
+        if (VK_SUCCESS != res) {
+            loader_destroy_generic_list(ptr_instance,
+                (struct loader_generic_list *)&icd_exts);
+            if (VK_ERROR_OUT_OF_HOST_MEMORY == res) {
+                // If out of memory, bail immediately.
+                goto out;
+            } else {
+                // Something bad happened with this ICD, so free it and try
+                // the next.
+                ptr_instance->icds = icd->next;
+                icd->next = NULL;
+                loader_icd_destroy(ptr_instance, icd, pAllocator);
+                continue;
+            }
+        }
 
         for (uint32_t j = 0; j < pCreateInfo->enabledExtensionCount; j++) {
             prop = get_extension_property(
@@ -4022,17 +4200,25 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateInstance(
 
         res = ptr_instance->icd_libs.list[i].CreateInstance(
             &icd_create_info, pAllocator, &(icd->instance));
-        if (res == VK_SUCCESS)
-            success = loader_icd_init_entrys(
-                icd, icd->instance,
-                ptr_instance->icd_libs.list[i].GetInstanceProcAddr);
-
-        if (res != VK_SUCCESS || !success) {
-            ptr_instance->icds = ptr_instance->icds->next;
+        if (VK_ERROR_OUT_OF_HOST_MEMORY == res) {
+            // If out of memory, bail immediately.
+            goto out;
+        } else if (VK_SUCCESS != res) {
+            loader_log(ptr_instance, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
+                       "ICD ignored: failed to CreateInstance in ICD %d", i);
+            ptr_instance->icds = icd->next;
+            icd->next = NULL;
             loader_icd_destroy(ptr_instance, icd, pAllocator);
-            loader_log(ptr_instance, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
+            continue;
+        }
+
+        if (!loader_icd_init_entrys(
+                icd, icd->instance,
+                ptr_instance->icd_libs.list[i].GetInstanceProcAddr)) {
+            loader_log(ptr_instance, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
                        "ICD ignored: failed to CreateInstance and find "
                        "entrypoints with ICD");
+            continue;
         }
     }
 
@@ -4041,15 +4227,24 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateInstance(
      * from it's initial value, the loader was unable to find
      * a suitable ICD.
      */
-    if (ptr_instance->icds == NULL) {
-        if (res == VK_SUCCESS) {
-            return VK_ERROR_INCOMPATIBLE_DRIVER;
-        } else {
-            return res;
+    if (VK_SUCCESS == res && ptr_instance->icds == NULL) {
+        res = VK_ERROR_INCOMPATIBLE_DRIVER;
+    }
+
+out:
+
+    if (VK_SUCCESS != res) {
+        while (NULL != ptr_instance->icds) {
+            icd = ptr_instance->icds;
+            ptr_instance->icds = icd->next;
+            if (NULL != icd->instance) {
+                icd->DestroyInstance(icd->instance, pAllocator);
+            }
+            loader_icd_destroy(ptr_instance, icd, pAllocator);
         }
     }
 
-    return VK_SUCCESS;
+    return res;
 }
 
 VKAPI_ATTR void VKAPI_CALL terminator_DestroyInstance(
@@ -4109,6 +4304,10 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateDevice(
     icd_exts.list = NULL;
 
     if (fpCreateDevice == NULL) {
+        loader_log(phys_dev->this_icd->this_instance,
+                   VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
+                   "No vkCreateDevice command exposed by ICD %s",
+                   phys_dev->this_icd->this_icd_lib->lib_name);
         res = VK_ERROR_INITIALIZATION_FAILED;
         goto out;
     }
@@ -4138,10 +4337,10 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateDevice(
         (const char *const *)filtered_extension_names;
 
     /* Get the physical device (ICD) extensions  */
-    if (!loader_init_generic_list(phys_dev->this_icd->this_instance,
+    res = loader_init_generic_list(phys_dev->this_icd->this_instance,
                                   (struct loader_generic_list *)&icd_exts,
-                                  sizeof(VkExtensionProperties))) {
-        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+                                  sizeof(VkExtensionProperties));
+    if (VK_SUCCESS != res) {
         goto out;
     }
 
@@ -4162,17 +4361,23 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateDevice(
             filtered_extension_names[localCreateInfo.enabledExtensionCount] =
                 (char *)extension_name;
             localCreateInfo.enabledExtensionCount++;
+        } else {
+            loader_log(phys_dev->this_icd->this_instance,
+                       VK_DEBUG_REPORT_WARNING_BIT_EXT, 0,
+                       "vkCreateDevice extension %s not available for "
+                       "devices associated with ICD %s",
+                       extension_name,
+                       phys_dev->this_icd->this_icd_lib->lib_name);
         }
     }
 
-    // TODO: Why does fpCreateDevice behave differently than
-    // this_icd->CreateDevice?
-    //    VkResult res = fpCreateDevice(phys_dev->phys_dev, &localCreateInfo,
-    //    pAllocator, &localDevice);
-    res = phys_dev->this_icd->CreateDevice(phys_dev->phys_dev, &localCreateInfo,
-                                           pAllocator, &dev->device);
-
+    res = fpCreateDevice(phys_dev->phys_dev, &localCreateInfo, pAllocator,
+                         &dev->device);
     if (res != VK_SUCCESS) {
+        loader_log(phys_dev->this_icd->this_instance,
+                   VK_DEBUG_REPORT_ERROR_BIT_EXT, 0,
+                   "vkCreateDevice call failed in ICD %s",
+                   phys_dev->this_icd->this_icd_lib->lib_name);
         goto out;
     }
 
@@ -4237,49 +4442,56 @@ terminator_EnumeratePhysicalDevices(VkInstance instance,
         phys_devs[i].this_icd = icd;
         icd = icd->next;
     }
-
-    *pPhysicalDeviceCount = inst->total_gpu_count;
-    if (!pPhysicalDevices) {
-        return res;
+    if (inst->total_gpu_count == 0) {
+        return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    /* Initialize the output pPhysicalDevices  with wrapped loader terminator
-     * physicalDevice objects; save this list of wrapped objects in instance
-     * struct for later cleanup and use by trampoline code */
-    uint32_t j, idx = 0;
-    uint32_t copy_count = 0;
+    uint32_t copy_count = inst->total_gpu_count;
 
-    copy_count = (inst->total_gpu_count < *pPhysicalDeviceCount)
-                     ? inst->total_gpu_count
-                     : *pPhysicalDeviceCount;
+    if (NULL != pPhysicalDevices) {
+        // Initialize the output pPhysicalDevices with wrapped loader
+        // terminator physicalDevice objects; save this list of
+        // wrapped objects in instance struct for later cleanup and
+        // use by trampoline code
+        uint32_t j, idx = 0;
 
-    if (inst->phys_devs_term)
-        loader_instance_heap_free(inst, inst->phys_devs_term);
-    inst->phys_devs_term = loader_instance_heap_alloc(
-        inst, sizeof(struct loader_physical_device) * copy_count,
-        VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
-    if (!inst->phys_devs_term)
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
+        if (copy_count > *pPhysicalDeviceCount) {
+            copy_count = *pPhysicalDeviceCount;
+        }
 
-    for (i = 0; idx < copy_count && i < inst->total_icd_count; i++) {
+        if (NULL == inst->phys_devs_term) {
+            inst->phys_devs_term = loader_instance_heap_alloc(
+                inst, sizeof(struct loader_physical_device) * inst->total_gpu_count,
+                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+            if (NULL == inst->phys_devs_term) {
+                return VK_ERROR_OUT_OF_HOST_MEMORY;
+            }
+        }
 
-        for (j = 0; j < phys_devs[i].count && idx < copy_count; j++) {
-            loader_set_dispatch((void *)&inst->phys_devs_term[idx], inst->disp);
-            inst->phys_devs_term[idx].this_icd = phys_devs[i].this_icd;
-            inst->phys_devs_term[idx].phys_dev = phys_devs[i].phys_devs[j];
-            pPhysicalDevices[idx] =
-                (VkPhysicalDevice)&inst->phys_devs_term[idx];
-            idx++;
+        for (i = 0; idx < inst->total_gpu_count && i < inst->total_icd_count;
+             i++) {
+            for (j = 0; j < phys_devs[i].count && idx < inst->total_gpu_count;
+                 j++) {
+                loader_set_dispatch((void *)&inst->phys_devs_term[idx],
+                                    inst->disp);
+                inst->phys_devs_term[idx].this_icd = phys_devs[i].this_icd;
+                inst->phys_devs_term[idx].icd_index = (uint8_t)(i);
+                inst->phys_devs_term[idx].phys_dev = phys_devs[i].phys_devs[j];
+                if (idx < copy_count) {
+                    pPhysicalDevices[idx] =
+                        (VkPhysicalDevice)&inst->phys_devs_term[idx];
+                }
+                idx++;
+            }
+        }
+
+        if (copy_count < inst->total_gpu_count) {
+            res = VK_INCOMPLETE;
         }
     }
+
     *pPhysicalDeviceCount = copy_count;
 
-    // TODO: Is phys_devs being leaked?
-
-    if (copy_count < inst->total_gpu_count) {
-        inst->total_gpu_count = copy_count;
-        return VK_INCOMPLETE;
-    }
     return res;
 }
 
@@ -4378,7 +4590,9 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(
     uint32_t *pPropertyCount, VkExtensionProperties *pProperties) {
     struct loader_physical_device *phys_dev;
 
-    struct loader_layer_list implicit_layer_list;
+    struct loader_layer_list implicit_layer_list = {0};
+    struct loader_extension_list all_exts = {0};
+    struct loader_extension_list icd_exts = {0};
 
     assert(pLayerName == NULL || strlen(pLayerName) == 0);
 
@@ -4395,10 +4609,14 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(
     /* get device extensions */
     res = icd->EnumerateDeviceExtensionProperties(phys_dev->phys_dev, NULL,
                                                   &icd_ext_count, pProperties);
-    if (res != VK_SUCCESS)
-        return res;
+    if (res != VK_SUCCESS) {
+        goto out;
+    }
 
-    loader_init_layer_list(icd->this_instance, &implicit_layer_list);
+    if (!loader_init_layer_list(icd->this_instance, &implicit_layer_list)) {
+        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+        goto out;
+    }
 
     loader_add_layer_implicit(
         icd->this_instance, VK_LAYER_TYPE_INSTANCE_IMPLICIT,
@@ -4408,22 +4626,24 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(
      * it depends on results of environment variables (which can change).
      */
     if (pProperties != NULL) {
-        struct loader_extension_list icd_exts;
         /* initialize dev_extension list within the physicalDevice object */
         res = loader_init_device_extensions(icd->this_instance, phys_dev,
                                             icd_ext_count, pProperties,
                                             &icd_exts);
-        if (res != VK_SUCCESS)
-            return res;
+        if (res != VK_SUCCESS) {
+            goto out;
+        }
 
         /* we need to determine which implicit layers are active,
          * and then add their extensions. This can't be cached as
          * it depends on results of environment variables (which can
          * change).
          */
-        struct loader_extension_list all_exts = {0};
-        loader_add_to_ext_list(icd->this_instance, &all_exts, icd_exts.count,
-                               icd_exts.list);
+        res = loader_add_to_ext_list(icd->this_instance, &all_exts,
+                                     icd_exts.count, icd_exts.list);
+        if (res != VK_SUCCESS) {
+            goto out;
+        }
 
         loader_add_layer_implicit(
             icd->this_instance, VK_LAYER_TYPE_INSTANCE_IMPLICIT,
@@ -4433,10 +4653,13 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(
             for (uint32_t j = 0;
                  j < implicit_layer_list.list[i].device_extension_list.count;
                  j++) {
-                loader_add_to_ext_list(icd->this_instance, &all_exts, 1,
-                                       &implicit_layer_list.list[i]
-                                            .device_extension_list.list[j]
-                                            .props);
+                res = loader_add_to_ext_list(icd->this_instance, &all_exts, 1,
+                                             &implicit_layer_list.list[i]
+                                                  .device_extension_list.list[j]
+                                                  .props);
+                if (res != VK_SUCCESS) {
+                    goto out;
+                }
             }
         }
         uint32_t capacity = *pPropertyCount;
@@ -4452,10 +4675,6 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(
         } else {
             *pPropertyCount = all_exts.count;
         }
-        loader_destroy_generic_list(icd->this_instance,
-                                    (struct loader_generic_list *)&all_exts);
-        loader_destroy_generic_list(icd->this_instance,
-                                    (struct loader_generic_list *)&icd_exts);
     } else {
         /* just return the count; need to add in the count of implicit layer
          * extensions
@@ -4469,8 +4688,22 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(
         res = VK_SUCCESS;
     }
 
-    loader_destroy_generic_list(
-        icd->this_instance, (struct loader_generic_list *)&implicit_layer_list);
+out:
+
+    if (NULL != implicit_layer_list.list) {
+        loader_destroy_generic_list(
+            icd->this_instance,
+            (struct loader_generic_list *)&implicit_layer_list);
+    }
+    if (NULL != all_exts.list) {
+        loader_destroy_generic_list(icd->this_instance,
+                                    (struct loader_generic_list *)&all_exts);
+    }
+    if (NULL != icd_exts.list) {
+        loader_destroy_generic_list(icd->this_instance,
+                                    (struct loader_generic_list *)&icd_exts);
+    }
+
     return res;
 }
 
