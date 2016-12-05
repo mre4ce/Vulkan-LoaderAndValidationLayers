@@ -2,15 +2,15 @@ cmake_minimum_required (VERSION 2.8.11)
 
 macro(run_vk_helper subcmd)
     add_custom_command(OUTPUT ${ARGN}
-        COMMAND ${PYTHON_CMD} ${PROJECT_SOURCE_DIR}/vk_helper.py --${subcmd} ${PROJECT_SOURCE_DIR}/include/vulkan/vulkan.h --abs_out_dir ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS ${PROJECT_SOURCE_DIR}/vk_helper.py ${PROJECT_SOURCE_DIR}/include/vulkan/vulkan.h
+        COMMAND ${PYTHON_CMD} ${SCRIPTS_DIR}/vk_helper.py --${subcmd} ${PROJECT_SOURCE_DIR}/include/vulkan/vulkan.h --abs_out_dir ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS ${SCRIPTS_DIR}/vk_helper.py ${PROJECT_SOURCE_DIR}/include/vulkan/vulkan.h
     )
 endmacro()
 
 macro(run_vk_layer_xml_generate dependency output)
     add_custom_command(OUTPUT ${output}
-        COMMAND ${PYTHON_CMD} ${PROJECT_SOURCE_DIR}/lvl_genvk.py -registry ${PROJECT_SOURCE_DIR}/vk.xml ${output}
-        DEPENDS ${PROJECT_SOURCE_DIR}/vk.xml ${PROJECT_SOURCE_DIR}/generator.py ${PROJECT_SOURCE_DIR}/${dependency} ${PROJECT_SOURCE_DIR}/lvl_genvk.py ${PROJECT_SOURCE_DIR}/reg.py
+        COMMAND ${PYTHON_CMD} ${SCRIPTS_DIR}/lvl_genvk.py -registry ${SCRIPTS_DIR}/vk.xml ${output}
+        DEPENDS ${SCRIPTS_DIR}/vk.xml ${SCRIPTS_DIR}/generator.py ${SCRIPTS_DIR}/${dependency} ${SCRIPTS_DIR}/lvl_genvk.py ${SCRIPTS_DIR}/reg.py
     )
 endmacro()
 
@@ -79,8 +79,8 @@ endif()
 if (WIN32)
     macro(add_vk_layer target)
     add_custom_command(OUTPUT VkLayer_${target}.def
-        COMMAND ${PYTHON_CMD} ${PROJECT_SOURCE_DIR}/vk-generate.py ${DisplayServer} win-def-file VkLayer_${target} layer > VkLayer_${target}.def
-        DEPENDS ${PROJECT_SOURCE_DIR}/vk-generate.py ${PROJECT_SOURCE_DIR}/vulkan.py
+        COMMAND ${PYTHON_CMD} ${SCRIPTS_DIR}/vk-generate.py ${DisplayServer} win-def-file VkLayer_${target} layer > VkLayer_${target}.def
+        DEPENDS ${SCRIPTS_DIR}/vk-generate.py ${SCRIPTS_DIR}/vulkan.py
     )
     add_library(VkLayer_${target} SHARED ${ARGN} VkLayer_${target}.def)
     target_link_Libraries(VkLayer_${target} VkLayer_utils)
@@ -114,8 +114,8 @@ else()
 endif()
 
 add_custom_command(OUTPUT vk_dispatch_table_helper.h
-    COMMAND ${PYTHON_CMD} ${PROJECT_SOURCE_DIR}/vk-generate.py ${DisplayServer} dispatch-table-ops layer > vk_dispatch_table_helper.h
-    DEPENDS ${PROJECT_SOURCE_DIR}/vk-generate.py ${PROJECT_SOURCE_DIR}/vulkan.py)
+    COMMAND ${PYTHON_CMD} ${SCRIPTS_DIR}/vk-generate.py AllPlatforms dispatch-table-ops layer > vk_dispatch_table_helper.h
+    DEPENDS ${SCRIPTS_DIR}/vk-generate.py ${SCRIPTS_DIR}/vulkan.py)
 
 run_vk_helper(gen_enum_string_helper vk_enum_string_helper.h)
 run_vk_helper(gen_struct_wrappers
@@ -128,16 +128,7 @@ run_vk_helper(gen_struct_wrappers
     vk_struct_wrappers.h
     vk_struct_wrappers.cpp
     vk_safe_struct.h
-# Don't list vk_safe_struct.cpp as OUTPUT to avoid duplicate builds.
-# If listed here use of it for add_library will cause it to be created
-# independently of custom target generate_vk_layer_helpers .
-# That breaks parallel builds.
-#   vk_safe_struct.cpp
-)
-
-# Let gen_struct_wrappers really create vk_safe_struct.cpp
-add_custom_command(OUTPUT vk_safe_struct.cpp
-    COMMAND echo defer making vk_safe_struct.cpp
+    vk_safe_struct.cpp
 )
 
 set_source_files_properties(
@@ -188,13 +179,13 @@ else()
     install(TARGETS VkLayer_utils DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
 
-add_vk_layer(core_validation core_validation.cpp vk_layer_table.cpp vk_safe_struct.cpp descriptor_sets.cpp)
+add_vk_layer(core_validation core_validation.cpp vk_layer_table.cpp descriptor_sets.cpp)
 add_vk_layer(object_tracker object_tracker.cpp vk_layer_table.cpp)
 add_vk_layer(image image.cpp vk_layer_table.cpp)
 add_vk_layer(swapchain swapchain.cpp vk_layer_table.cpp)
 # generated
 add_vk_layer(threading threading.cpp thread_check.h vk_layer_table.cpp)
-add_vk_layer(unique_objects unique_objects.cpp unique_objects_wrappers.h vk_layer_table.cpp vk_safe_struct.cpp)
+add_vk_layer(unique_objects unique_objects.cpp unique_objects_wrappers.h vk_layer_table.cpp)
 add_vk_layer(parameter_validation parameter_validation.cpp parameter_validation.h vk_layer_table.cpp)
 
 # Core validation has additional dependencies

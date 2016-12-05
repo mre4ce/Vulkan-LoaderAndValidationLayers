@@ -5,10 +5,6 @@ This repository does not contain a Vulkan-capable driver.
 Before proceeding, it is strongly recommended that you obtain a Vulkan driver from your graphics hardware vendor
 and install it.
 
-Note: The sample Vulkan Intel driver for Linux (ICD) is being deprecated in favor of other driver options from Intel.
-This driver has been moved to the [VulkanTools repo](https://github.com/LunarG/VulkanTools).
-Further instructions regarding this ICD are available there.
-
 ## Contributing
 
 If you intend to contribute, the preferred work flow is for you to develop your contribution
@@ -19,7 +15,7 @@ Please see the [CONTRIBUTING](CONTRIBUTING.md) file in this respository for more
 
 To create your local git repository:
 ```
-git clone https://github.com/KhronosGroup/Vulkan-LoaderAndValidationLayers 
+git clone https://github.com/KhronosGroup/Vulkan-LoaderAndValidationLayers
 ```
 
 ## Linux Build
@@ -30,9 +26,9 @@ The build generates the loader, layers, and tests.
 This repo has been built and tested on Ubuntu 14.04.3 LTS, 14.10, 15.04, 15.10, and 16.04 LTS.
 It should be straightforward to use it on other Linux distros.
 
-These packages are needed to build this repository: 
+These packages are needed to build this repository:
 ```
-sudo apt-get install git cmake build-essential bison libx11-dev libxcb1-dev
+sudo apt-get install git cmake build-essential bison libx11-dev libxcb1-dev libxkbcommon-dev
 ```
 
 Example debug build (Note that the update\_external\_sources script used below builds external tools into predefined locations. See **Loader and Validation Layer Dependencies** for more information and other options):
@@ -78,7 +74,7 @@ This command installs files to:
 * `/usr/local/include/vulkan`:  Vulkan include files
 * `/usr/local/lib`:  Vulkan loader and layers shared objects
 * `/usr/local/bin`:  vulkaninfo application
-* `/etc/vulkan/explicit_layer.d`:  Layer JSON files
+* `/usr/local/etc/vulkan/explicit_layer.d`:  Layer JSON files
 
 You may need to run `ldconfig` in order to refresh the system loader search cache on some Linux systems.
 
@@ -89,17 +85,77 @@ You can easily remove the installed files with:
 cat install_manifest.txt | sudo xargs rm
 ```
 
-See the CMake documentation for details on using `DESTDIR` and `CMAKE_INSTALL_PREFIX` to customize
-your installation location.
+You can further customize the installation location by setting additional CMake variables
+to override their defaults.
+For example, if you would like to install to `/tmp/build` instead of `/usr/local`, specify:
+
+```
+-DCMAKE_INSTALL_PREFIX=/tmp/build
+-DDEST_DIR=/tmp/build
+```
+
+on your CMake command line and run `make install` as before.
+The install step places the files in `/tmp/build`.
+
+Using the `CMAKE_INSTALL_PREFIX` to customize the install location also modifies the
+loader search paths to include searching for layers in the specified install location.
+In this example, setting `CMAKE_INSTALL_PREFIX` to `/tmp/build` causes the loader to
+search `/tmp/build/etc/vulkan/explicit_layer.d` and `/tmp/build/share/vulkan/explicit_layer.d`
+for the layer JSON files.
+The loader also searches the "standard" system locations of `/etc/vulkan/explicit_layer.d`
+and `/usr/share/vulkan/explicit_layer.d` after searching the two locations under `/tmp/build`.
+
+You can further customize the installation directories by using the CMake variables
+`CMAKE_INSTALL_SYSCONFDIR` to rename the `etc` directory and `CMAKE_INSTALL_DATADIR`
+to rename the `share` directory.
+
+See the CMake documentation for more details on using these variables
+to further customize your installation.
+
+Also see the `LoaderAndLayerInterface` document in the `loader` folder in this repository for more
+information about loader operation.
 
 Note that some executables in this repository (e.g., `cube`) use the "rpath" linker directive
 to load the Vulkan loader from the build directory, `dbuild` in this example.
 This means that even after installing the loader to the system directories, these executables
 still use the loader from the build directory.
 
+### Linux 32-bit support
+
+Usage of this repository's contents in 32-bit Linux environments is not officially supported.
+However, since this repository is supported on 32-bit Windows, these modules should generally
+work on 32-bit Linux.
+
+Here are some notes for building 32-bit targets on a 64-bit Ubuntu "reference" platform:
+
+If not already installed, install the following 32-bit development libraries:
+
+`gcc-multilib g++-multilib libx11-dev:i386`
+
+This list may vary depending on your distro and which windowing systems you are building for.
+
+Set up your environment for building 32-bit targets:
+
+```
+export CFLAGS=-m32
+export CXXFLAGS=-m32
+export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu
+```
+
+Again, your PKG_CONFIG configuration may be different, depending on your distro.
+
+If the libraries in the `external` directory have already been built
+for 64-bit targets,
+delete or "clean" this directory and rebuild it with
+the above settings using the `update_external_sources` shell script.
+This is required because the libraries in `external` must be built for
+32-bit in order to be usable by the rest of the components in the repository.
+
+Finally, rebuild the repository using `cmake` and `make`, as explained above.
+
 ## Validation Test
 
-The test executables can be found in the dbuild/tests directory. 
+The test executables can be found in the dbuild/tests directory.
 Some of the tests that are available:
 - vk\_layer\_validation\_tests: Test Vulkan layers.
 
@@ -145,7 +201,7 @@ Build all Windows targets after installing required software and cloning the Loa
 ```
 cd Vulkan-LoaderAndValidationLayers  # cd to the root of the cloned git repository
 update_external_sources.bat --all
-build_windows_targets.bat 
+build_windows_targets.bat
 ```
 
 At this point, you can use Windows Explorer to launch Visual Studio by double-clicking on the "VULKAN.sln" file in the \build folder.  Once Visual Studio comes up, you can select "Debug" or "Release" from a drop-down list.  You can start a build with either the menu (Build->Build Solution), or a keyboard shortcut (Ctrl+Shift+B).  As part of the build process, Python scripts will create additional Visual Studio files and projects, along with additional source files.  All of these auto-generated files are under the "build" folder.
@@ -253,7 +309,7 @@ The [Qt Creator IDE](https://qt.io/download-open-source/#section-2) can open a r
 - Then do the same with the Vulkan-LoaderAndValidationLayers CMakeList.txt file.
 - In order to debug with QtCreator, a [Microsoft WDK: eg WDK 10](http://go.microsoft.com/fwlink/p/?LinkId=526733) is required. Note that installing the WDK breaks the MSVC vcvarsall.bat build scripts provided by MSVC, requiring that the LIB, INCLUDE, and PATH env variables be set to the WDK paths by some other means
 
-## Loader and Validation Layer Dependencies 
+## Loader and Validation Layer Dependencies
 gslang and SPIRV-Tools repos are required to build and run Loader and Validation Layer components. They are not git sub-modules of Vulkan-LoaderAndValidationLayers but Vulkan-LoaderAndValidationLayers is linked to specific revisions of gslang and spirv-tools. These can be automatically cloned and built to predefined locations with the update\_external\_sources scripts. If a custom configuration is required, do the following steps:
 
 1) clone the repos:
@@ -287,7 +343,7 @@ _on windows_
     Especially valuable are the BASH shell and git packages.
   - If you don't want to use Cygwin, there are other shells and environments that can be used.
     You can also use a Git package that doesn't come from Cygwin.
-	
+
 - [Ninja on all platforms](https://github.com/ninja-build/ninja/releases). [The Ninja-build project](ninja-build.org). [Ninja Users Manual](ninja-build.org/manual.html) 
 
 - [QtCreator as IDE for CMake builds on all platforms](https://qt.io/download-open-source/#section-2)

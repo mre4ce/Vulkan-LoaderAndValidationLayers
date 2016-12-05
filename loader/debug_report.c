@@ -215,14 +215,18 @@ VkResult util_CopyDebugReportCreateInfos(
             ((VkDebugReportCallbackEXT *)pAllocator->pfnAllocation(
                 pAllocator->pUserData, n * sizeof(VkDebugReportCallbackEXT),
                 sizeof(void *), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT));
+        if (!pCallbacks) {
+            pAllocator->pfnFree(pAllocator->pUserData, pInfos);
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
     } else {
 #endif
         pCallbacks = *callbacks = ((VkDebugReportCallbackEXT *)malloc(
             n * sizeof(VkDebugReportCallbackEXT)));
-    }
-    if (!pCallbacks) {
-        free(pInfos);
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
+        if (!pCallbacks) {
+            free(pInfos);
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
     }
     // 4th, copy each VkDebugReportCallbackCreateInfoEXT for use by
     // vkDestroyInstance, and assign a unique handle to each callback (just
@@ -232,7 +236,7 @@ VkResult util_CopyDebugReportCreateInfos(
         if (((VkInstanceCreateInfo *)pNext)->sType ==
             VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT) {
             memcpy(pInfos, pNext, sizeof(VkDebugReportCallbackCreateInfoEXT));
-            *pCallbacks++ = (VkDebugReportCallbackEXT)pInfos++;
+            *pCallbacks++ = (VkDebugReportCallbackEXT)(uintptr_t)pInfos++;
         }
         pNext = (void *)((VkInstanceCreateInfo *)pNext)->pNext;
     }
@@ -244,8 +248,17 @@ VkResult util_CopyDebugReportCreateInfos(
 void util_FreeDebugReportCreateInfos(const VkAllocationCallbacks *pAllocator,
                                      VkDebugReportCallbackCreateInfoEXT *infos,
                                      VkDebugReportCallbackEXT *callbacks) {
-    free(infos);
-    free(callbacks);
+#if (DEBUG_DISABLE_APP_ALLOCATORS == 1)
+                                         {
+#else
+    if (pAllocator != NULL) {
+         pAllocator->pfnFree(pAllocator->pUserData, infos);
+         pAllocator->pfnFree(pAllocator->pUserData, callbacks);
+    } else {
+#endif
+        free(infos);
+        free(callbacks);
+    }
 }
 
 VkResult util_CreateDebugReportCallbacks(
@@ -309,7 +322,7 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateDebugReportCallback(
     const VkAllocationCallbacks *pAllocator,
     VkDebugReportCallbackEXT *pCallback) {
     VkDebugReportCallbackEXT *icd_info = NULL;
-    const struct loader_icd *icd;
+    const struct loader_icd_term *icd_term;
     struct loader_instance *inst = (struct loader_instance *)instance;
     VkResult res = VK_SUCCESS;
     uint32_t storage_idx;
@@ -336,13 +349,14 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateDebugReportCallback(
     }
 
     storage_idx = 0;
-    for (icd = inst->icds; icd; icd = icd->next) {
-        if (!icd->CreateDebugReportCallbackEXT) {
+    for (icd_term = inst->icd_terms; icd_term; icd_term = icd_term->next) {
+        if (!icd_term->CreateDebugReportCallbackEXT) {
             continue;
         }
 
-        res = icd->CreateDebugReportCallbackEXT(
-            icd->instance, pCreateInfo, pAllocator, &icd_info[storage_idx]);
+        res = icd_term->CreateDebugReportCallbackEXT(icd_term->instance,
+                                                     pCreateInfo, pAllocator,
+                                                     &icd_info[storage_idx]);
 
         if (res != VK_SUCCESS) {
             goto out;
@@ -388,14 +402,14 @@ out:
     // Roll back on errors
     if (VK_SUCCESS != res) {
         storage_idx = 0;
-        for (icd = inst->icds; icd; icd = icd->next) {
-            if (NULL == icd->DestroyDebugReportCallbackEXT) {
+        for (icd_term = inst->icd_terms; icd_term; icd_term = icd_term->next) {
+            if (NULL == icd_term->DestroyDebugReportCallbackEXT) {
                 continue;
             }
 
             if (icd_info[storage_idx]) {
-                icd->DestroyDebugReportCallbackEXT(
-                    icd->instance, icd_info[storage_idx], pAllocator);
+                icd_term->DestroyDebugReportCallbackEXT(
+                    icd_term->instance, icd_info[storage_idx], pAllocator);
             }
             storage_idx++;
         }
@@ -433,21 +447,31 @@ VKAPI_ATTR void VKAPI_CALL terminator_DestroyDebugReportCallback(
     const VkAllocationCallbacks *pAllocator) {
     uint32_t storage_idx;
     VkDebugReportCallbackEXT *icd_info;
-    const struct loader_icd *icd;
+    const struct loader_icd_term *icd_term;
 
     struct loader_instance *inst = (struct loader_instance *)instance;
     icd_info = *(VkDebugReportCallbackEXT **)&callback;
     storage_idx = 0;
-    for (icd = inst->icds; icd; icd = icd->next) {
-        if (NULL == icd->DestroyDebugReportCallbackEXT) {
+    for (icd_term = inst->icd_terms; icd_term; icd_term = icd_term->next) {
+        if (NULL == icd_term->DestroyDebugReportCallbackEXT) {
             continue;
         }
 
         if (icd_info[storage_idx]) {
-            icd->DestroyDebugReportCallbackEXT(
-                icd->instance, icd_info[storage_idx], pAllocator);
+            icd_term->DestroyDebugReportCallbackEXT(
+                icd_term->instance, icd_info[storage_idx], pAllocator);
         }
         storage_idx++;
+    }
+
+#if (DEBUG_DISABLE_APP_ALLOCATORS == 1)
+    {
+#else
+    if (pAllocator != NULL) {
+        pAllocator->pfnFree(pAllocator->pUserData, icd_info);
+    } else {
+#endif
+        free(icd_info);
     }
 }
 
@@ -459,15 +483,16 @@ VKAPI_ATTR void VKAPI_CALL terminator_DebugReportMessage(
     VkInstance instance, VkDebugReportFlagsEXT flags,
     VkDebugReportObjectTypeEXT objType, uint64_t object, size_t location,
     int32_t msgCode, const char *pLayerPrefix, const char *pMsg) {
-    const struct loader_icd *icd;
+    const struct loader_icd_term *icd_term;
 
     struct loader_instance *inst = (struct loader_instance *)instance;
 
     loader_platform_thread_lock_mutex(&loader_lock);
-    for (icd = inst->icds; icd; icd = icd->next) {
-        if (icd->DebugReportMessageEXT != NULL) {
-            icd->DebugReportMessageEXT(icd->instance, flags, objType, object,
-                                       location, msgCode, pLayerPrefix, pMsg);
+    for (icd_term = inst->icd_terms; icd_term; icd_term = icd_term->next) {
+        if (icd_term->DebugReportMessageEXT != NULL) {
+            icd_term->DebugReportMessageEXT(icd_term->instance, flags, objType,
+                                            object, location, msgCode,
+                                            pLayerPrefix, pMsg);
         }
     }
 

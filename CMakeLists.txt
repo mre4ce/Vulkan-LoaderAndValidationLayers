@@ -5,9 +5,12 @@ cmake_minimum_required(VERSION 2.8.11)
 project (VULKAN)
 # set (CMAKE_VERBOSE_MAKEFILE 1)
 
+# The API_NAME allows renaming builds to avoid conflicts with installed SDKs
 # The MAJOR number of the version we're building, used in naming
-# vulkan-<major>.dll (and other files).
+# <api-name>-<major>.dll (and other files).
+set(API_NAME "Vulkan" CACHE STRING "API name to use when building")
 set(MAJOR "1")
+string(TOLOWER ${API_NAME} API_LOWERCASE)
 
 find_package(PythonInterp 3 REQUIRED)
 
@@ -53,6 +56,8 @@ else()
 endif()
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+set(SCRIPTS_DIR "${CMAKE_SOURCE_DIR}/scripts")
 
 # Header file for CMake settings
 include_directories("${PROJECT_SOURCE_DIR}/include")
