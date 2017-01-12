@@ -225,7 +225,6 @@ class ParamCheckerOutputGenerator(OutputGenerator):
         self.structNames = []
         self.stypes = []
         self.structTypes = dict()
-        self.handleTypes = set()
         self.commands = []
         self.structMembers = []
         self.validatedStructs = dict()
@@ -264,7 +263,7 @@ class ParamCheckerOutputGenerator(OutputGenerator):
                 if (self.genOpts.protectProto):
                     write(self.genOpts.protectProto,
                           self.genOpts.protectProtoStr, file=self.outFile)
-                write('\n'.join(self.sections['command']), end='', file=self.outFile)
+                write('\n'.join(self.sections['command']), end=u'', file=self.outFile)
             if (self.featureExtraProtect != None):
                 write('#endif /*', self.featureExtraProtect, '*/', file=self.outFile)
             else:
@@ -825,8 +824,6 @@ class ParamCheckerOutputGenerator(OutputGenerator):
     def genFuncBody(self, funcName, values, valuePrefix, displayNamePrefix, structTypeName):
         lines = []    # Generated lines of code
         unused = []   # Unused variable names
-        if funcName == "vkRegisterObjectsNVX":
-            indent = 0
         for value in values:
             usedLines = []
             lenParam = None

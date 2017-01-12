@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 #
-# Copyright (c) 2013-2016 The Khronos Group Inc.
+# Copyright (c) 2013-2017 The Khronos Group Inc.
+# Copyright (c) 2015-2017 LunarG, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +25,7 @@ from threading_generator import  ThreadGeneratorOptions, ThreadOutputGenerator
 from parameter_validation_generator import ParamCheckerGeneratorOptions, ParamCheckerOutputGenerator
 from unique_objects_generator import UniqueObjectsGeneratorOptions, UniqueObjectsOutputGenerator
 from dispatch_table_generator import DispatchTableOutputGenerator, DispatchTableOutputGeneratorOptions
+from helper_file_generator import HelperFileOutputGenerator, HelperFileOutputGeneratorOptions
 
 # Simple timer functions
 startTime = None
@@ -183,6 +185,116 @@ def makeGenOpts(extensions = [], removeExtensions = [], protect = True, director
             alignFuncParam    = 48)
         ]
 
+    # Helper file generator options for vk_enum_string_helper.h
+    genOpts['vk_enum_string_helper.h'] = [
+          HelperFileOutputGenerator,
+          HelperFileOutputGeneratorOptions(
+            filename          = 'vk_enum_string_helper.h',
+            directory         = directory,
+            apiname           = 'vulkan',
+            profile           = None,
+            versions          = allVersions,
+            emitversions      = allVersions,
+            defaultExtensions = 'vulkan',
+            addExtensions     = addExtensions,
+            removeExtensions  = removeExtensions,
+            prefixText        = prefixStrings + vkPrefixStrings,
+            protectFeature    = False,
+            apicall           = 'VKAPI_ATTR ',
+            apientry          = 'VKAPI_CALL ',
+            apientryp         = 'VKAPI_PTR *',
+            alignFuncParam    = 48,
+            helper_file_type  = 'enum_string_header')
+        ]
+
+    # Helper file generator options for vk_struct_size_helper.h
+    genOpts['vk_struct_size_helper.h'] = [
+          HelperFileOutputGenerator,
+          HelperFileOutputGeneratorOptions(
+            filename          = 'vk_struct_size_helper.h',
+            directory         = directory,
+            apiname           = 'vulkan',
+            profile           = None,
+            versions          = allVersions,
+            emitversions      = allVersions,
+            defaultExtensions = 'vulkan',
+            addExtensions     = addExtensions,
+            removeExtensions  = removeExtensions,
+            prefixText        = prefixStrings + vkPrefixStrings,
+            protectFeature    = False,
+            apicall           = 'VKAPI_ATTR ',
+            apientry          = 'VKAPI_CALL ',
+            apientryp         = 'VKAPI_PTR *',
+            alignFuncParam    = 48,
+            helper_file_type  = 'struct_size_header')
+        ]
+
+    # Helper file generator options for vk_struct_size_helper.c
+    genOpts['vk_struct_size_helper.c'] = [
+          HelperFileOutputGenerator,
+          HelperFileOutputGeneratorOptions(
+            filename          = 'vk_struct_size_helper.c',
+            directory         = directory,
+            apiname           = 'vulkan',
+            profile           = None,
+            versions          = allVersions,
+            emitversions      = allVersions,
+            defaultExtensions = 'vulkan',
+            addExtensions     = addExtensions,
+            removeExtensions  = removeExtensions,
+            prefixText        = prefixStrings + vkPrefixStrings,
+            protectFeature    = False,
+            apicall           = 'VKAPI_ATTR ',
+            apientry          = 'VKAPI_CALL ',
+            apientryp         = 'VKAPI_PTR *',
+            alignFuncParam    = 48,
+            helper_file_type  = 'struct_size_source')
+        ]
+
+    # Helper file generator options for vk_safe_struct.h
+    genOpts['vk_safe_struct.h'] = [
+          HelperFileOutputGenerator,
+          HelperFileOutputGeneratorOptions(
+            filename          = 'vk_safe_struct.h',
+            directory         = directory,
+            apiname           = 'vulkan',
+            profile           = None,
+            versions          = allVersions,
+            emitversions      = allVersions,
+            defaultExtensions = 'vulkan',
+            addExtensions     = addExtensions,
+            removeExtensions  = removeExtensions,
+            prefixText        = prefixStrings + vkPrefixStrings,
+            protectFeature    = False,
+            apicall           = 'VKAPI_ATTR ',
+            apientry          = 'VKAPI_CALL ',
+            apientryp         = 'VKAPI_PTR *',
+            alignFuncParam    = 48,
+            helper_file_type  = 'safe_struct_header')
+        ]
+
+    # Helper file generator options for vk_safe_struct.cpp
+    genOpts['vk_safe_struct.cpp'] = [
+          HelperFileOutputGenerator,
+          HelperFileOutputGeneratorOptions(
+            filename          = 'vk_safe_struct.cpp',
+            directory         = directory,
+            apiname           = 'vulkan',
+            profile           = None,
+            versions          = allVersions,
+            emitversions      = allVersions,
+            defaultExtensions = 'vulkan',
+            addExtensions     = addExtensions,
+            removeExtensions  = removeExtensions,
+            prefixText        = prefixStrings + vkPrefixStrings,
+            protectFeature    = False,
+            apicall           = 'VKAPI_ATTR ',
+            apientry          = 'VKAPI_CALL ',
+            apientryp         = 'VKAPI_PTR *',
+            alignFuncParam    = 48,
+            helper_file_type  = 'safe_struct_source')
+        ]
+
 
 
 # Generate a target based on the options in the matching genOpts{} object.
@@ -207,7 +319,8 @@ def genTarget(args):
         createGenerator = genOpts[args.target][0]
         options = genOpts[args.target][1]
 
-        write('* Building', options.filename, file=sys.stderr)
+        if not args.quiet:
+            write('* Building', options.filename, file=sys.stderr)
 
         startTimer(args.time)
         gen = createGenerator(errFile=errWarn,
@@ -215,7 +328,9 @@ def genTarget(args):
                               diagFile=diag)
         reg.setGenerator(gen)
         reg.apiGen(options)
-        write('* Generated', options.filename, file=sys.stderr)
+
+        if not args.quiet:
+            write('* Generated', options.filename, file=sys.stderr)
         endTimer(args.time, '* Time to generate ' + options.filename + ' =')
     else:
         write('No generator options for unknown target:',
@@ -258,6 +373,8 @@ if __name__ == '__main__':
                         help='Create target and related files in specified directory')
     parser.add_argument('target', metavar='target', nargs='?',
                         help='Specify target')
+    parser.add_argument('-quiet', action='store_true', default=False,
+                        help='Suppress script output during normal execution.')
 
     args = parser.parse_args()
 
